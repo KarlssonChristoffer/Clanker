@@ -22,10 +22,11 @@ import { getConfig } from '../core/config.js';
 import { UserFacingError } from '../core/interaction-errors.js';
 import { childLogger } from '../core/logger.js';
 import { db } from '../db.js';
+import { musicChannelId, refreshMusicPanel } from '../music-panel.js';
 import { wowBlueprint, type RoleGroup } from '../setup/blueprint.js';
 import { executePlan, loadBindings, missingBotPermissions, renderPlan, snapshotGuild, undoRun } from '../setup/executor.js';
 import { isMutating, planSetup } from '../setup/planner.js';
-import { EPHEMERAL, requireGuildId, requireManageGuild } from './_shared.js';
+import { EPHEMERAL, plural, requireGuildId, requireManageGuild } from './_shared.js';
 
 const log = childLogger('setup');
 const running = new Set<string>();
@@ -64,7 +65,7 @@ async function runWowSetup(interaction: ChatInputCommandInteraction): Promise<vo
   if (dryRun) {
     const embeds = renderPlan(plan, guild, blueprint);
     embeds[0]!.setTitle(`🧪 Torrkörning: /setup wow (${flavor})`).setDescription(
-      `Så här skulle servern ändras. **Inget har gjorts än.** ${changes} ändringar planerade.\nKör \`/setup wow\` utan torrkörning för att genomföra.`,
+      `Så här skulle servern ändras. **Inget har gjorts än.** ${plural(changes, 'ändring planerad', 'ändringar planerade')}.\nKör \`/setup wow\` utan torrkörning för att genomföra.`,
     );
     await interaction.editReply({ embeds });
     return;
@@ -78,8 +79,12 @@ async function runWowSetup(interaction: ChatInputCommandInteraction): Promise<vo
       [guild.id, flavor, interaction.user.id],
     );
     const runId = runRes.rows[0]!.id;
-    await interaction.editReply(`🏗️ Bygger servern (${changes} ändringar)… det här kan ta en halv minut.`);
+    await interaction.editReply(`🏗️ Bygger servern (${plural(changes, 'ändring', 'ändringar')})… det här kan ta en halv minut.`);
     const result = await executePlan({ guild, db, plan, blueprint, runId });
+    // Put the music panel in #musik right away, so the channel explains itself before anyone plays anything.
+    await refreshMusicPanel(interaction.client, guild.id).catch((err) => log.warn({ err, guildId: guild.id }, 'music panel after setup failed'));
+    const musicChannel = await musicChannelId(guild).catch(() => null);
+    if (musicChannel) result.notes.push(`Musikpanelen finns i <#${musicChannel}>: kör /play där eller var som helst.`);
     await db.query(`UPDATE bot.setup_runs SET status = $2, summary = $3::jsonb WHERE id = $1`, [
       runId,
       result.failures.length ? 'failed' : 'done',
@@ -124,7 +129,7 @@ async function undoLatest(guild: Guild, runId?: string) {
     .setTitle('↩️ Setup ångrad')
     .setDescription(
       [
-        `${result.reverted} ändringar återställda.`,
+        `${plural(result.reverted, 'ändring återställd', 'ändringar återställda')}.`,
         ...result.kept.map((k) => `🟡 Kvar: ${k}`),
         ...result.failures.slice(0, 10).map((f) => `❌ ${f}`),
       ]

@@ -1,5 +1,11 @@
 /** Shared Swedish copy for Jev features. */
-import { JevDisabledError, JevUnavailableError } from './client.js';
+import { UserFacingError } from '../core/interaction-errors.js';
+import { JevDisabledError, JevUnavailableError, jev } from './client.js';
+
+/** Stop a Jev command up front (ephemeral, before any public defer) when no API key is configured. */
+export function requireJev(): void {
+  if (!jev().enabled) throw new UserFacingError(jevUnavailableText(new JevDisabledError()));
+}
 
 export function jevUnavailableText(err: unknown): string {
   if (err instanceof JevDisabledError) {

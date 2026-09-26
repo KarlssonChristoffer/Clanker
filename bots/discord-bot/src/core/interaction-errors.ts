@@ -66,7 +66,10 @@ export async function handleInteractionError(interaction: Interaction, err: unkn
 
   const content = userFacing ? (err as Error).message : pickLine();
   try {
-    if (interaction.deferred && !interaction.replied) {
+    if (interaction.isMessageComponent() && interaction.deferred) {
+      // After deferUpdate(), editReply would overwrite the message the button sits on (a panel, a raid post…).
+      await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+    } else if (interaction.deferred && !interaction.replied) {
       await interaction.editReply({ content, embeds: [], components: [] });
     } else if (interaction.replied) {
       await interaction.followUp({ content, flags: MessageFlags.Ephemeral });

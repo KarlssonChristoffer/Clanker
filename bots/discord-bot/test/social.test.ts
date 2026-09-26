@@ -69,10 +69,29 @@ describe('weekly report stats', () => {
     expect(stats.topVoice[0]!.hours).toBeCloseTo(2, 5);
     expect(stats.topVoice[1]!.hours).toBeCloseTo(1, 5);
     expect(stats.topChatters).toEqual([
-      { name: 'kalle', count: 2 },
-      { name: 'lisa', count: 1 },
+      { userId: 'u1', name: 'kalle', count: 2 },
+      { userId: 'u2', name: 'lisa', count: 1 },
     ]);
     expect(stats.topSong).toEqual({ title: 'Darude', artist: 'Sandstorm', plays: 2 });
     expect(stats.quotes.map((x) => x.content)).toEqual(['Veckans visdom']);
+  });
+
+  it('leaves bots out of the voice and chat toplists', async () => {
+    const now = new Date('2026-10-04T17:00:00Z');
+    const q = t.db.query.bind(t.db);
+    await q(
+      `INSERT INTO stats.voice_sessions (guild_id, user_id, channel_id, username, joined_at, left_at) VALUES
+       ('g1','bot','v','Clanker','2026-10-02T18:00:00Z','2026-10-02T23:00:00Z'),
+       ('g1','u1','v','kalle','2026-10-02T18:00:00Z','2026-10-02T20:00:00Z')`,
+    );
+    await q(
+      `INSERT INTO stats.message_log (message_id, guild_id, channel_id, user_id, username, content, created_at) VALUES
+       ('a','g1','c','bot','Clanker','beep','2026-10-03T10:00:00Z'),
+       ('b','g1','c','u1','kalle','hej','2026-10-03T10:01:00Z')`,
+    );
+    const stats = await collectWeeklyStats(t.db, 'g1', now, { excludeUserIds: ['bot'] });
+    expect(stats.topVoice.map((v) => v.userId)).toEqual(['u1']);
+    expect(stats.voiceHours).toBeCloseTo(2, 5);
+    expect(stats.topChatters.map((c) => c.userId)).toEqual(['u1']);
   });
 });

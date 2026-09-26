@@ -5,9 +5,9 @@
  * mood headline. Without Jev a random quote and a neutral headline are used.
  */
 import { isPostable, type PostableChannel } from '../core/channels.js';
-import { EmbedBuilder, type Client, type Guild } from 'discord.js';
+import { EmbedBuilder, escapeMarkdown, type Client, type Guild } from 'discord.js';
 import { registerAdminSubcommand } from '../commands/admin.js';
-import { EPHEMERAL, pick } from '../commands/_shared.js';
+import { EPHEMERAL, pick, plural } from '../commands/_shared.js';
 import { features } from '../core/features.js';
 import { UserFacingError } from '../core/interaction-errors.js';
 import { childLogger } from '../core/logger.js';
@@ -25,30 +25,37 @@ export const REPORT_HOUR = 19;
 
 export type WeeklyStats = {
   voiceHours: number;
-  topVoice: { name: string; hours: number }[];
-  topChatters: { name: string; count: number }[];
+  topVoice: { userId: string; name: string; hours: number }[];
+  topChatters: { userId: string; name: string; count: number }[];
   topSong: { title: string; artist: string | null; plays: number } | null;
   quotes: { id: string; content: string; author_id: string; author_name: string }[];
   raidsHeld: number;
   raidsUpcoming: number;
 };
 
-export async function collectWeeklyStats(q: Queryable, guildId: string, now: Date): Promise<WeeklyStats> {
+/** `excludeUserIds`: bots (Clanker itself sits in voice while playing music) and anyone else to leave out. */
+export async function collectWeeklyStats(
+  q: Queryable,
+  guildId: string,
+  now: Date,
+  opts: { excludeUserIds?: string[] } = {},
+): Promise<WeeklyStats> {
   const from = new Date(now.getTime() - 7 * 86_400_000);
+  const exclude = opts.excludeUserIds ?? [];
   const [voice, chat, song, quotes, raids] = await Promise.all([
-    q.query<{ username: string; secs: string }>(
-      `SELECT max(username) AS username,
+    q.query<{ user_id: string; username: string; secs: string }>(
+      `SELECT user_id, max(username) AS username,
               sum(extract(epoch FROM (LEAST(COALESCE(left_at, $3), $3) - GREATEST(joined_at, $2))))::text AS secs
        FROM stats.voice_sessions
-       WHERE guild_id = $1 AND joined_at < $3 AND COALESCE(left_at, $3) > $2
+       WHERE guild_id = $1 AND joined_at < $3 AND COALESCE(left_at, $3) > $2 AND NOT (user_id = ANY($4::text[]))
        GROUP BY user_id ORDER BY sum(extract(epoch FROM (LEAST(COALESCE(left_at, $3), $3) - GREATEST(joined_at, $2)))) DESC`,
-      [guildId, from, now],
+      [guildId, from, now, exclude],
     ),
-    q.query<{ username: string; n: string }>(
-      `SELECT max(username) AS username, count(*)::text AS n FROM stats.message_log
-       WHERE guild_id = $1 AND created_at >= $2 AND created_at < $3
+    q.query<{ user_id: string; username: string; n: string }>(
+      `SELECT user_id, max(username) AS username, count(*)::text AS n FROM stats.message_log
+       WHERE guild_id = $1 AND created_at >= $2 AND created_at < $3 AND NOT (user_id = ANY($4::text[]))
        GROUP BY user_id ORDER BY count(*) DESC LIMIT 3`,
-      [guildId, from, now],
+      [guildId, from, now, exclude],
     ),
     q.query<{ title: string; artist: string | null; n: string }>(
       `SELECT title, artist, count(*)::text AS n FROM bot.music_playback_log
@@ -68,11 +75,13 @@ export async function collectWeeklyStats(q: Queryable, guildId: string, now: Dat
       [guildId, from, now],
     ),
   ]);
-  const voiceRows = voice.rows.map((r) => ({ name: r.username, hours: Number(r.secs) / 3600 })).filter((r) => r.hours > 0);
+  const voiceRows = voice.rows
+    .map((r) => ({ userId: r.user_id, name: r.username, hours: Number(r.secs) / 3600 }))
+    .filter((r) => r.hours > 0);
   return {
     voiceHours: voiceRows.reduce((a, r) => a + r.hours, 0),
     topVoice: voiceRows.slice(0, 3),
-    topChatters: chat.rows.map((r) => ({ name: r.username, count: Number(r.n) })),
+    topChatters: chat.rows.map((r) => ({ userId: r.user_id, name: r.username, count: Number(r.n) })),
     topSong: song.rows[0] ? { title: song.rows[0].title, artist: song.rows[0].artist, plays: Number(song.rows[0].n) } : null,
     quotes: quotes.rows,
     raidsHeld: Number(raids.rows[0]?.held ?? 0),
@@ -130,9 +139,12 @@ function fmtHours(h: number): string {
 }
 
 export async function buildWeeklyReportEmbed(guild: Guild, now = new Date()): Promise<EmbedBuilder> {
-  const stats = await collectWeeklyStats(db, guild.id, now);
+  const bots = [guild.client.user.id, ...guild.members.cache.filter((m) => m.user.bot).keys()];
+  const stats = await collectWeeklyStats(db, guild.id, now, { excludeUserIds: [...new Set(bots)] });
   const { quote, headline } = await pickQuoteAndHeadline(stats, guild.id);
   const medals = ['🥇', '🥈', '🥉'];
+  // What people are called in this server, not their login name.
+  const nameOf = (p: { userId: string; name: string }) => escapeMarkdown(guild.members.cache.get(p.userId)?.displayName ?? p.name);
   const embed = new EmbedBuilder()
     .setTitle(`📰 Veckorapporten: ${headline}`)
     .setColor(0xf39c12)
@@ -140,24 +152,31 @@ export async function buildWeeklyReportEmbed(guild: Guild, now = new Date()): Pr
   embed.addFields({
     name: '🔊 Röst',
     value: stats.voiceHours > 0
-      ? `**${fmtHours(stats.voiceHours)}** tillsammans i röst.\n${stats.topVoice.map((v, i) => `${medals[i]} ${v.name}: ${fmtHours(v.hours)}`).join('\n')}`
+      ? `**${fmtHours(stats.voiceHours)}** tillsammans i röst.\n${stats.topVoice.map((v, i) => `${medals[i]} ${nameOf(v)}: ${fmtHours(v.hours)}`).join('\n')}`
       : 'Tyst i röstkanalerna den här veckan. 🦗',
     inline: true,
   });
   embed.addFields({
     name: '💬 Mest aktiva',
-    value: stats.topChatters.length ? stats.topChatters.map((c, i) => `${medals[i]} ${c.name}: ${c.count} meddelanden`).join('\n') : 'Ingen sa något. Misstänkt.',
+    value: stats.topChatters.length
+      ? stats.topChatters.map((c, i) => `${medals[i]} ${nameOf(c)}: ${plural(c.count, 'meddelande', 'meddelanden')}`).join('\n')
+      : 'Ingen sa något. Misstänkt.',
     inline: true,
   });
   embed.addFields({
     name: '🎵 Veckans låt',
-    value: stats.topSong ? `**${stats.topSong.title}**${stats.topSong.artist ? ` – ${stats.topSong.artist}` : ''} (${stats.topSong.plays} gånger)` : 'Ingen musik i veckan. Skäms.',
+    value: stats.topSong
+      ? `**${stats.topSong.title}**${stats.topSong.artist ? ` – ${stats.topSong.artist}` : ''} (${plural(stats.topSong.plays, 'gång', 'gånger')})`
+      : 'Ingen musik i veckan. Skäms.',
   });
   if (quote) {
     embed.addFields({ name: '📖 Veckans citat', value: `> ${quote.content.slice(0, 900).split('\n').join('\n> ')}\n— **${quote.author_name}**` });
   }
   if (stats.raidsHeld || stats.raidsUpcoming) {
-    embed.addFields({ name: '⚔️ WoW', value: `${stats.raidsHeld} raider/dungeons i veckan · ${stats.raidsUpcoming} inbokade nästa vecka` });
+    embed.addFields({
+      name: '⚔️ WoW',
+      value: `${plural(stats.raidsHeld, 'raid/dungeon', 'raider/dungeons')} i veckan · ${stats.raidsUpcoming} inbokade nästa vecka`,
+    });
   }
   return embed;
 }

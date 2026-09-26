@@ -66,6 +66,7 @@ export function wowBlueprint(flavor: WowFlavor): Blueprint {
       { key: 'ch.guider', name: 'guider-och-addons', kind: 'text', category: 'cat.wow', onboardingDefault: true, topic: 'Guider, addons, WeakAuras och macros.' },
       { key: 'ch.clips', name: 'clips', kind: 'text', category: 'cat.socialt', onboardingDefault: true, topic: 'Klipp och skärmdumpar.' },
       { key: 'ch.citat', name: 'citat', kind: 'text', category: 'cat.socialt', onboardingDefault: true, topic: 'Reagera med 💬 på ett meddelande så hamnar det i citatboken.' },
+      { key: 'ch.musik', name: 'musik', kind: 'text', category: 'cat.rost', onboardingDefault: true, topic: 'Styr musiken här: /play <låt, länk eller spellista>. Panelen visar vad som spelas och har knappar för paus, nästa och stopp.' },
       { key: 'vc.raid', name: 'Raid', kind: 'voice', category: 'cat.rost' },
       { key: 'vc.skapa', name: '➕ Skapa grupp', kind: 'voice', category: 'cat.rost' },
       { key: 'vc.afk', name: 'AFK', kind: 'voice', category: 'cat.rost' },

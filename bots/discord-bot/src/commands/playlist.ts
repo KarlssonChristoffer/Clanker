@@ -12,6 +12,7 @@ import {
   removeTrackFromPlaylist,
 } from '../music-player.js';
 import { EPHEMERAL, fmtDuration, requireGuildId, resolveVoiceChannelId } from './_shared.js';
+import { panelHint } from './music.js';
 
 async function execute(interaction: ChatInputCommandInteraction): Promise<void> {
   const sub = interaction.options.getSubcommand(true);
@@ -96,6 +97,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
     const name = interaction.options.getString('namn', true);
     const channelId = resolveVoiceChannelId(interaction);
     await interaction.deferReply({ flags: EPHEMERAL });
+    const hint = await panelHint(interaction);
     const result = await playPlaylist(interaction.client, guildId, name, userId, channelId);
     if (!result) {
       await interaction.editReply(`❌ Hittade ingen spellista med namnet **${name}**.`);
@@ -105,7 +107,7 @@ async function execute(interaction: ChatInputCommandInteraction): Promise<void> 
       await interaction.editReply(`📭 **${result.name}** är tom.`);
       return;
     }
-    await interaction.editReply(`▶️ **${result.name}** — ${result.queued} spår lades till i kön.`);
+    await interaction.editReply(`▶️ **${result.name}** — ${result.queued} spår lades till i kön.${hint}`);
   }
 }
 

@@ -4,7 +4,7 @@ Discord-boten i Clanker-monorepot: musik, trackers för hubben, Jev (TypeSafe), 
 citatbok, spelkvällar och veckorapport. TypeScript, discord.js 14, Node ≥ 22.12, ESM.
 
 - Driftsättning och flytt till tincan: [`scripts/migrate-to-tincan.md`](../../scripts/migrate-to-tincan.md)
-- Manuell testlista i Hermes: [`TESTPLAN.md`](../../TESTPLAN.md)
+- Manuell testlista (kör i en egen testserver): [`TESTPLAN.md`](../../TESTPLAN.md)
 - Alla miljövariabler med kommentarer: [`.env.example`](./.env.example)
 
 ## Kommandon
@@ -36,6 +36,9 @@ Tider tolkas alltid deterministiskt i Europe/Stockholm: `20:00`, `ikväll 21`, `
 `3/10 20:00`, `3 okt 20`, `2026-10-03 20:00`, `om 2 h`. Förstår boten inte tiden svarar den med exempel i stället för att gissa.
 
 Automatiskt, utan kommando:
+- **Musikpanel.** Ett meddelande i #musik (från `/setup wow`) visar vad som spelas, vem som önskade det, vad som står
+  på tur och knappar för Förra/Pausa/Nästa/Blanda/Stopp. Utan #musik hamnar panelen där `/play` senast kördes.
+  Efter en omstart finns knappen **Fortsätt kön** om låtar låg kvar.
 - **LFG i #lfg.** Nya inlägg tolkas (nyckelnivå och klockslag via regex, resten via Jev) och blir gruppkort. Full grupp ger en röstkanal.
 - **💬-reaktion.** Meddelandet sparas i citatboken och boten bekräftar med 📖.
 - **➕ Skapa grupp.** Man får en egen röstkanal som försvinner när den blir tom.

@@ -9,8 +9,8 @@ import { UserFacingError } from '../core/interaction-errors.js';
 import { isJevUnavailable, jev } from '../jev/client.js';
 import { jevOptOut } from '../jev/store.js';
 import { choice, score, type ScoreAnswer } from '../jev/types.js';
-import { jevUnavailableText } from '../jev/ui.js';
-import { bar, requireGuildId } from './_shared.js';
+import { jevUnavailableText, requireJev } from '../jev/ui.js';
+import { bar, plural, requireGuildId } from './_shared.js';
 
 const HEADINGS = {
   fredagsmys: { label: 'Fredagsmys 🛋️', desc: 'Cosy and relaxed, good vibes, snacks, weekend feeling' },
@@ -44,6 +44,7 @@ export const vibe: SlashCommand = {
   async execute(interaction) {
     const guildId = requireGuildId(interaction);
     await features().require(guildId, 'jev');
+    requireJev();
     const channel = interaction.channel;
     if (!channel || !channel.isTextBased() || !('messages' in channel)) {
       throw new UserFacingError('Jag kan bara läsa av stämningen i textkanaler.');
@@ -93,7 +94,7 @@ export const vibe: SlashCommand = {
     const embed = new EmbedBuilder()
       .setTitle(`Vibe-koll: ${heading.label}`)
       .setDescription(`${lines.join('\n')}\n\n-# Rubriksäkerhet ${Math.round(answers.rubrik.confidence * 100)} % · säkerhet per rad till höger`)
-      .setFooter({ text: `${messages.length} meddelanden · ${names.size} personer · ${res.model}` })
+      .setFooter({ text: `${plural(messages.length, 'meddelande', 'meddelanden')} · ${plural(names.size, 'person', 'personer')} · ${res.model}` })
       .setColor(0xeb459e);
     await interaction.editReply({ embeds: [embed] });
   },

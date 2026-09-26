@@ -2,16 +2,25 @@
  * Music playback commands: /play, /skip, /previous, /pause, /resume, /stop, /queue.
  * Playback itself lives in music-player.ts; the hub controls the same player over bot HTTP.
  */
-import { EmbedBuilder, SlashCommandBuilder } from 'discord.js';
+import { EmbedBuilder, SlashCommandBuilder, type ChatInputCommandInteraction } from 'discord.js';
 import type { SlashCommand } from '../core/commands.js';
 import { features } from '../core/features.js';
 import { childLogger } from '../core/logger.js';
 import { UserFacingError } from '../core/interaction-errors.js';
 import { getPool } from '../db.js';
 import { enqueue, pause, previous, resume, skip, stop } from '../music-player.js';
-import { EPHEMERAL, requireGuildId, resolveVoiceChannelId } from './_shared.js';
+import { musicChannelId, rememberMusicChannel } from '../music-panel.js';
+import { EPHEMERAL, plural, requireGuildId, resolveVoiceChannelId } from './_shared.js';
 
 const log = childLogger('music');
+
+/** Remember where music is being asked for (panel fallback) and point to #musik when it's elsewhere. */
+export async function panelHint(interaction: ChatInputCommandInteraction): Promise<string> {
+  if (!interaction.guild) return '';
+  rememberMusicChannel(interaction.guild.id, interaction.channelId);
+  const panelChannel = await musicChannelId(interaction.guild).catch(() => null);
+  return panelChannel && panelChannel !== interaction.channelId ? `\n-# Kön och knapparna finns i <#${panelChannel}>.` : '';
+}
 
 export const play: SlashCommand = {
   data: new SlashCommandBuilder()
@@ -25,6 +34,7 @@ export const play: SlashCommand = {
     await features().require(guildId, 'musik');
     const channelId = resolveVoiceChannelId(interaction);
     await interaction.deferReply({ flags: EPHEMERAL });
+    const hint = await panelHint(interaction);
     const query = interaction.options.getString('query', true);
     let result;
     try {
@@ -38,10 +48,10 @@ export const play: SlashCommand = {
       return;
     }
     if (result.kind === 'playlist') {
-      await interaction.editReply(`▶️ **${result.title}**: ${result.queued} låtar lades till i kön.`);
+      await interaction.editReply(`▶️ **${result.title}**: ${plural(result.queued, 'låt', 'låtar')} lades till i kön.${hint}`);
     } else {
       const t = result.track;
-      await interaction.editReply(`▶️ **${t.title}**${t.artist ? ` – ${t.artist}` : ''} lades till i kön.`);
+      await interaction.editReply(`▶️ **${t.title}**${t.artist ? ` – ${t.artist}` : ''} lades till i kön.${hint}`);
     }
   },
 };

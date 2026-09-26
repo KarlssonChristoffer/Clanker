@@ -1,13 +1,15 @@
-# Testplan: Clanker-boten i Hermes
+# Testplan: Clanker-boten i en testserver
 
 Manuell checklista. Ta ett steg i taget och bocka av. **Förväntat** beskriver vad som ska hända.
 Automatiska tester körs med `npm test` (vitest). Den här listan täcker det som kräver riktiga Discord.
+Kör i en egen testserver (t.ex. "Clanker Test"), inte i en server där andra är, eftersom `/setup` bygger om servern.
+Punkter om hubben är valfria och gäller bara när webbhubben körs.
 
 ## 0. Förberedelser
 
 - [ ] Developer Portal → Bot: *Server Members*, *Presence* och *Message Content* är påslagna.
-- [ ] Boten är inbjuden till Hermes med behörighetslänken i [`bots/discord-bot/README.md`](bots/discord-bot/README.md).
-- [ ] `.env` har `DISCORD_GUILD_ID=<Hermes>`, `SETUP_ALLOWED_GUILD_IDS=<Hermes>`, `WOW_FLAVOR=forever`,
+- [ ] Boten är inbjuden till testservern med behörighetslänken i [`bots/discord-bot/README.md`](bots/discord-bot/README.md).
+- [ ] `.env` har `DISCORD_GUILD_ID=<testservern>` (kommaseparerat med andra servrar), `SETUP_ALLOWED_GUILD_IDS=<testservern>`, `WOW_FLAVOR=forever`,
       `BOT_HTTP_SECRET=<slumpad>`, `TYPESAFE_API_KEY=<nyckel>` (sektion 6 kräver den) och `LOG_LEVEL=debug` under testet.
 - [ ] Boten startas (`npm run dev:discord-bot` på PC:n eller `discord-bot-host` på tincan). Bara **en** instans.
 
@@ -28,12 +30,20 @@ Automatiska tester körs med `npm test` (vitest). Den här listan täcker det so
 - [ ] Starta Postgres igen. `/health` → 200.
 - [ ] Spela musik (sektion 3) och stoppa sedan boten (`Ctrl+C` eller `docker compose stop discord-bot-host`).
       **Förväntat:** loggen visar `shutting down` → `shutdown complete`, boten lämnar röstkanalen och låten ligger kvar först i kön.
+- [ ] Starta boten igen. **Förväntat:** musikpanelen visar "1 låt väntar i kön" och knappen **Fortsätt kön**, som
+      startar låten i din röstkanal.
 
-## 3. Musik och hubben
+## 3. Musik
 
 - [ ] Gå in i en röstkanal, kör `/play never gonna give you up`. **Förväntat:** ljud inom några sekunder.
 - [ ] `/queue` visar låten. `/pause`, `/resume`, `/skip` och `/stop` fungerar.
-- [ ] I hubben: musikkön visar samma sak, och *skip* från hubben fungerar (visar att `X-Clanker-Secret` stämmer).
+- [ ] Musikpanelen i #musik: "🎶 Spelar nu" med låt, röstkanal, vem som önskade den, "slut om …" och Näst på tur.
+      Knapparna Förra/Pausa/Nästa/Blanda/Stopp fungerar och panelen uppdateras inom en sekund, även när man styr med
+      slash-kommandon. `/play` i en annan kanal svarar med "Kön och knapparna finns i #musik".
+- [ ] En ny låt börjar efter att någon skrivit i #musik. **Förväntat:** panelen flyttas längst ner (gamla tas bort).
+- [ ] `/stop`. **Förväntat:** panelen visar "Tyst just nu…" utan knappar.
+- [ ] I en server utan #musik: `/play` i #allmänt. **Förväntat:** panelen dyker upp i #allmänt och uppdateras där.
+- [ ] (Valfritt) I hubben: musikkön visar samma sak, och *skip* från hubben fungerar (visar att `X-Clanker-Secret` stämmer).
 - [ ] `curl -X POST http://127.0.0.1:3012/skip -d '{"guildId":"1"}'` utan header → **401**.
 
 ## 4. Feature-flaggor
@@ -67,12 +77,13 @@ Automatiska tester körs med `npm test` (vitest). Den här listan täcker det so
       Inget har ändrats i servern.
 - [ ] `/setup wow`. **Förväntat:** kategorierna ℹ️ Info, ⚔️ WoW, 🎉 Socialt och 🔊 Röst skapas med kanalerna. #lfg är ett forum
       med taggarna Dungeon/Raid/PvP/Leveling/Övrigt. Rollerna är de 9 klasserna i klassfärg, @Tank/@Healer/@DPS (pingbara),
-      @Raider/@Dungeons/@Casual. Övriga kanaler har flyttats till 📦 Arkiv och är skrivskyddade (inga raderade).
-      #välkommen och #annonser är skrivskyddade för @everyone. Svaret har knappen **Ångra senaste setup**.
+      @Raider/@Dungeons/@Casual. Övriga kanaler har flyttats till 📦 Arkiv och är skrivskyddade (inga raderade); arkiverade
+      röstkanaler går inte heller att gå in i. #välkommen och #annonser är skrivskyddade för @everyone. #musik har en
+      musikpanel. Svaret nämner tomma kategorier som blev kvar och har knappen **Ångra senaste setup**.
 - [ ] Kör `/setup wow` igen. **Förväntat:** bara "Återanvänds" + rollväljare/onboarding, inga nya kanaler eller roller.
 - [ ] Byt namn på #raid-anmälan och kör torrkörning. **Förväntat:** kanalen återanvänds (hittas via bindning).
 - [ ] I #välkommen: välj klass, roll och intresse i menyerna. **Förväntat:** rollerna delas ut, ephemeral bekräftelse; avmarkering tar bort dem.
-- [ ] Är Hermes en Community-server: Server Settings → Onboarding visar samma frågor.
+- [ ] Är testservern en Community-server: Server Settings → Onboarding visar samma frågor.
 - [ ] Tryck **Ångra senaste setup**. **Förväntat:** skapade kanaler utan innehåll och roller utan medlemmar tas bort, flyttade
       kanaler flyttas tillbaka och skrivskyddet återställs. Det som behölls listas.
 - [ ] Kör `/setup wow` i en server som *inte* står i `SETUP_ALLOWED_GUILD_IDS`. **Förväntat:** "🚧 … jag rör ingenting."
@@ -118,7 +129,7 @@ Automatiska tester körs med `npm test` (vitest). Den här listan täcker det so
 
 - [ ] Reagera med 💬 på någons meddelande. **Förväntat:** boten reagerar 📖. Ett andra 💬 på samma meddelande ger inget nytt citat.
 - [ ] `/citat` → citatet med datum och länk. `/citat sök:<ord>` och `/citat från:@person` fungerar.
-- [ ] Hubben: lore-widgeten visar citat "ur citatboken" (inbyggda citat om boken är tom).
+- [ ] (Valfritt) Hubben: lore-widgeten visar citat "ur citatboken" (inbyggda citat om boken är tom).
 
 ## 13. Spelkväll
 
@@ -129,11 +140,12 @@ Automatiska tester körs med `npm test` (vitest). Den här listan täcker det so
 
 - [ ] `/admin veckorapport-nu` → rapport i #annonser: röst-timmar, mest aktiva, veckans låt, veckans citat (vald av Jev)
       och en rubrik.
-- [ ] Reset-inlägg: slå på *Reset-inlägg* och tvinga fram jobbet:
-      `UPDATE bot.scheduled_jobs SET run_at = now() WHERE kind = 'wow-reset' AND status = 'pending';`
+- [ ] Reset-inlägg: slå på *Reset-inlägg* och tvinga fram jobbet **bara för testservern** (utan `guild_id` flyttas
+      alla servrars jobb):
+      `UPDATE bot.scheduled_jobs SET run_at = now() WHERE kind = 'wow-reset' AND status = 'pending' AND guild_id = '<testserverns id>';`
       **Förväntat:** inom 30 s kommer "🗓️ Ny vecka!" i #annonser, och ett nytt jobb ligger kvar för nästa vecka.
 
-## 15. Hubben: livevy utan egen gateway
+## 15. (Valfritt) Hubben: livevy utan egen gateway
 
 - [ ] Dashboardens röst-widget visar vilka som är i röst och badgen "ansluten".
 - [ ] Stoppa boten. **Förväntat:** inom cirka 90 s visar badgen frånkopplad med en förklaring. hub-api loggar inga gateway-fel

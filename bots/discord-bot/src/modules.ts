@@ -16,6 +16,7 @@ import {
 import { ping } from './commands/ping.js';
 import { playlist } from './commands/playlist.js';
 import { messageLogHandler } from './message-tracker.js';
+import { musicPanelComponents, refreshAllMusicPanels, registerMusicPanel } from './music-panel.js';
 import { jevModule } from './jev/module.js';
 import { wowModule } from './wow/module.js';
 import { socialModule } from './social/module.js';
@@ -29,6 +30,9 @@ const coreModule: BotModule = {
 const musicModule: BotModule = {
   name: 'music',
   commands: [play, skipCommand, previousCommand, pauseCommand, resumeCommand, stopCommand, queue, playlist],
+  components: [musicPanelComponents],
+  setup: registerMusicPanel,
+  onReady: refreshAllMusicPanels,
 };
 
 export function loadModules(): BotModule[] {

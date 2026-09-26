@@ -13,6 +13,7 @@ import {
   type AudioPlayer,
   type VoiceConnection,
 } from '@discordjs/voice';
+import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -76,6 +77,18 @@ export type Track = {
 };
 
 const PLAYBACK_HISTORY_MAX = 50;
+
+/**
+ * What changed for a guild, so listeners (the Discord music panel) know what to redraw:
+ * 'track' = a new song started, 'state' = pause/resume/seek/stop, 'queue' = the queue changed.
+ * Emitted after the DB write, from every entry point (slash commands, buttons and the hub over HTTP).
+ */
+export type MusicChange = 'track' | 'state' | 'queue';
+export const musicEvents = new EventEmitter<{ change: [guildId: string, change: MusicChange] }>();
+
+function notifyChange(guildId: string, change: MusicChange): void {
+  musicEvents.emit('change', guildId, change);
+}
 
 type GuildPlayer = {
   player: AudioPlayer;
@@ -741,10 +754,12 @@ async function saveNowPlaying(guildId: string, track: Track): Promise<void> {
      track.durationSec, track.source, track.requestedBy, track.channelId],
   );
   void recordMusicPlaybackLog({ guildId, event: 'play_start', track });
+  notifyChange(guildId, 'track');
 }
 
 async function clearNowPlaying(guildId: string): Promise<void> {
   await getPool().query('DELETE FROM bot.music_now_playing WHERE guild_id = $1', [guildId]);
+  notifyChange(guildId, 'state');
 }
 
 async function popNextFromQueue(guildId: string): Promise<Track | null> {
@@ -784,6 +799,7 @@ async function addToQueue(guildId: string, track: Track): Promise<void> {
      track.durationSec, track.source, track.requestedBy],
   );
   void recordMusicPlaybackLog({ guildId, event: 'queued', track });
+  notifyChange(guildId, 'queue');
 }
 
 /** Insert at front of queue (earlier `added_at` than existing rows). */
@@ -805,10 +821,12 @@ async function addToQueueFront(guildId: string, track: Track): Promise<void> {
     track,
     meta: { queue_position: 'front' },
   });
+  notifyChange(guildId, 'queue');
 }
 
 async function clearQueue(guildId: string): Promise<void> {
   await getPool().query('DELETE FROM bot.music_queue WHERE guild_id = $1', [guildId]);
+  notifyChange(guildId, 'queue');
 }
 
 /** Randomize queue order by reassigning `added_at` (earliest plays first). */
@@ -826,6 +844,7 @@ export async function shuffleQueue(guildId: string): Promise<number> {
      WHERE q.id = s.id AND q.guild_id = $1`,
     [gid],
   );
+  notifyChange(gid, 'queue');
   return res.rowCount ?? 0;
 }
 
@@ -869,6 +888,7 @@ export async function reorderMusicQueue(guildId: string, orderedIds: number[]): 
   } finally {
     client.release();
   }
+  notifyChange(gid, 'queue');
   return true;
 }
 
@@ -1140,6 +1160,24 @@ export async function enqueue(
   return { kind: 'track', track };
 }
 
+/**
+ * Start the queue in `channelId` when nothing is playing, e.g. after a restart left tracks behind.
+ * Returns the track that started, or null when the queue is empty or something already plays.
+ */
+export async function playFromQueue(client: Client, guildId: string, channelId: string): Promise<Track | null> {
+  const gid = voiceSnowflake(guildId);
+  if (isActivelyPlaying(players.get(gid))) return null;
+  const next = await popNextFromQueue(gid);
+  if (!next) return null;
+  try {
+    await playTrack(client, gid, { ...next, channelId: voiceSnowflake(channelId) });
+  } catch (err) {
+    await addToQueueFront(gid, next);
+    throw err;
+  }
+  return next;
+}
+
 export async function skip(guildId: string): Promise<void> {
   const gid = voiceSnowflake(guildId);
   const gp = players.get(gid);
@@ -1186,6 +1224,7 @@ export async function pause(guildId: string): Promise<void> {
     event: 'pause',
     track: gp.currentTrack,
   });
+  notifyChange(gid, 'state');
 }
 
 export async function resume(guildId: string): Promise<void> {
@@ -1206,6 +1245,12 @@ export async function resume(guildId: string): Promise<void> {
     event: 'resume',
     track: gp.currentTrack,
   });
+  notifyChange(gid, 'state');
+}
+
+/** True while a guild's player is paused (the panel's play/pause button uses this). */
+export function isPaused(guildId: string): boolean {
+  return players.get(voiceSnowflake(guildId))?.player.state.status === AudioPlayerStatus.Paused;
 }
 
 export async function seek(guildId: string, seekSec: number): Promise<void> {
@@ -1232,6 +1277,7 @@ export async function seek(guildId: string, seekSec: number): Promise<void> {
     track,
     meta: { position_sec: clamped },
   });
+  notifyChange(gid, 'state');
 }
 
 export async function stop(guildId: string): Promise<void> {

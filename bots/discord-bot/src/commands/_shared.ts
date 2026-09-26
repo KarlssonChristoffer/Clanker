@@ -34,6 +34,20 @@ export function fmtDuration(sec: number | null): string {
   return ` [${m}:${s.toString().padStart(2, '0')}]`;
 }
 
+/** Count with the right Swedish noun form: plural(1, 'låt', 'låtar') → "1 låt", plural(3, …) → "3 låtar". */
+export function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Seconds as m:ss (or h:mm:ss). */
+export function clock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(s % 60)}` : `${m}:${pad(s % 60)}`;
+}
+
 /** Unicode bar: 0–1 → e.g. ▰▰▰▱▱▱▱▱▱▱ */
 export function bar(fraction: number, width = 10): string {
   const f = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0));

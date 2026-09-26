@@ -36,6 +36,8 @@ describe('planSetup', () => {
     expect(bp.roles.filter((r) => r.group === 'class')).toHaveLength(9);
     expect(bp.roles.map((r) => r.name)).toContain('Dungeons');
     expect(bp.channels.find((c) => c.key === 'ch.lfg')?.forumTags).not.toContain('M+');
+    // Music gets its own text channel next to the voice channels (home of the music panel).
+    expect(bp.channels.find((c) => c.key === 'ch.musik')).toMatchObject({ kind: 'text', category: 'cat.rost' });
   });
 
   it('reuses matching channels, moves misplaced ones and archives unknown ones', () => {

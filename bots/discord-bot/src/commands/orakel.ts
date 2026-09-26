@@ -4,7 +4,7 @@ import type { SlashCommand } from '../core/commands.js';
 import { features } from '../core/features.js';
 import { isJevUnavailable, jev } from '../jev/client.js';
 import { noul } from '../jev/types.js';
-import { jevUnavailableText } from '../jev/ui.js';
+import { jevUnavailableText, requireJev } from '../jev/ui.js';
 import { bar, pick, requireGuildId } from './_shared.js';
 
 const QUIPS: { min: number; lines: string[] }[] = [
@@ -35,6 +35,7 @@ export const orakel: SlashCommand = {
   async execute(interaction) {
     const guildId = requireGuildId(interaction);
     await features().require(guildId, 'jev');
+    requireJev();
     const claim = interaction.options.getString('påstående', true).trim();
     await interaction.deferReply();
     let p: number;

@@ -14,7 +14,7 @@ import { childLogger } from '../core/logger.js';
 import { db } from '../db.js';
 import { classesFor, findClass, ROLE_EMOJI, ROLE_LABEL, type Role } from '../wow/game-data.js';
 import { createDataSource, slugifyRealm, type CharacterProfile, type WowDataSource } from '../wow/data-source.js';
-import { EPHEMERAL, requireGuildId } from './_shared.js';
+import { EPHEMERAL, plural, requireGuildId } from './_shared.js';
 
 const log = childLogger('wow');
 const REFRESH_AFTER_MS = 15 * 60_000;
@@ -266,7 +266,7 @@ export const roster: SlashCommand = {
       if (text.length > 4000) text = `${text.slice(0, 3990)}\n…`;
       embeds.push(new EmbedBuilder().setTitle(title).setDescription(text).setColor(role === 'tank' ? 0x3498db : role === 'healer' ? 0x2ecc71 : 0xe74c3c));
     }
-    embeds[0]!.setAuthor({ name: `Roster · ${res.rows.length} karaktärer` });
+    embeds[0]!.setAuthor({ name: `Roster · ${plural(res.rows.length, 'karaktär', 'karaktärer')}` });
     await interaction.reply({ embeds: embeds.slice(0, 10), allowedMentions: { parse: [] } });
   },
 };

@@ -40,7 +40,9 @@ const log = childLogger('setup');
 
 export const ROLE_PICKER_BINDING = 'msg.role-picker';
 const READ_ONLY_FLAGS = ['SendMessages', 'SendMessagesInThreads', 'CreatePublicThreads', 'CreatePrivateThreads'] as const;
-type ReadOnlyFlag = (typeof READ_ONLY_FLAGS)[number];
+/** Archived voice channels are closed for joining too, not only for chat. */
+const ARCHIVED_VOICE_FLAGS = [...READ_ONLY_FLAGS, 'Connect'] as const;
+type ReadOnlyFlag = (typeof ARCHIVED_VOICE_FLAGS)[number];
 
 /** Permissions the bot needs for /setup. */
 export const SETUP_BOT_PERMISSIONS = [
@@ -245,25 +247,27 @@ export function renderPlan(plan: Plan, guild: Guild, blueprint: Blueprint): Embe
 
 type Recorder = (action: string, kind: string, id: string, key: string | null, before: unknown, after: unknown) => Promise<void>;
 
-function readOnlyOverwrite(deny: boolean): PermissionOverwriteOptions {
-  return Object.fromEntries(READ_ONLY_FLAGS.map((f) => [f, deny ? false : null])) as PermissionOverwriteOptions;
+function readOnlyOverwrite(flags: readonly ReadOnlyFlag[]): PermissionOverwriteOptions {
+  return Object.fromEntries(flags.map((f) => [f, false])) as PermissionOverwriteOptions;
 }
 
-function overwriteState(channel: GuildBasedChannel, id: string): Record<ReadOnlyFlag, boolean | null> {
+function overwriteState(channel: GuildBasedChannel, id: string, flags: readonly ReadOnlyFlag[]): Partial<Record<ReadOnlyFlag, boolean | null>> {
   const ow = 'permissionOverwrites' in channel ? channel.permissionOverwrites.cache.get(id) : undefined;
   return Object.fromEntries(
-    READ_ONLY_FLAGS.map((f) => {
+    flags.map((f) => {
       const bit = PermissionFlagsBits[f];
       return [f, ow?.allow.has(bit) ? true : ow?.deny.has(bit) ? false : null];
     }),
-  ) as Record<ReadOnlyFlag, boolean | null>;
+  );
 }
 
-async function makeReadOnly(channel: GuildBasedChannel, guild: Guild, record: Recorder, key: string | null): Promise<void> {
+async function makeReadOnly(channel: GuildBasedChannel, guild: Guild, record: Recorder, key: string | null, opts: { archive?: boolean } = {}): Promise<void> {
   if (!('permissionOverwrites' in channel)) return;
-  const before = overwriteState(channel, guild.id);
-  await channel.permissionOverwrites.edit(guild.id, readOnlyOverwrite(true), { reason: 'Clanker /setup: skrivskydd' });
-  await record('permissions', 'channel', channel.id, key, { everyone: before }, { everyone: readOnlyOverwrite(true) });
+  const isVoice = channel.type === ChannelType.GuildVoice || channel.type === ChannelType.GuildStageVoice;
+  const flags = opts.archive && isVoice ? ARCHIVED_VOICE_FLAGS : READ_ONLY_FLAGS;
+  const before = overwriteState(channel, guild.id, flags);
+  await channel.permissionOverwrites.edit(guild.id, readOnlyOverwrite(flags), { reason: 'Clanker /setup: skrivskydd' });
+  await record('permissions', 'channel', channel.id, key, { everyone: before }, { everyone: readOnlyOverwrite(flags) });
 }
 
 export type ExecutionResult = { done: number; failures: string[]; notes: string[] };
@@ -402,7 +406,7 @@ export async function executePlan(opts: {
           if (!ch || !parent || ch.isThread()) throw new Error('kanal eller kategori saknas');
           await ch.setParent(parent, { lockPermissions: false, reason });
           await record('move', 'channel', ch.id, step.op === 'move-channel' ? step.channel.key : null, { parentId: step.fromParentId }, { parentId: parent });
-          if (step.op === 'archive-channel') await makeReadOnly(ch, guild, record, null);
+          if (step.op === 'archive-channel') await makeReadOnly(ch, guild, record, null, { archive: true });
         });
         break;
       case 'set-readonly':
@@ -454,6 +458,15 @@ export async function executePlan(opts: {
         });
         break;
     }
+  }
+
+  // Archiving often leaves the server's old categories empty. Setup never deletes anything, so point them out.
+  const ours = new Set(categoryIds.values());
+  const emptyCategories = guild.channels.cache
+    .filter((c) => c.type === ChannelType.GuildCategory && !ours.has(c.id) && (c as CategoryChannel).children.cache.size === 0)
+    .map((c) => c.name);
+  if (emptyCategories.length) {
+    result.notes.push(`Tomma kategorier kvar: ${emptyCategories.join(', ')}. Jag raderar aldrig något, så ta bort dem själv om de inte behövs.`);
   }
   return result;
 }
@@ -566,7 +579,7 @@ export async function undoRun(opts: { guild: Guild; db: Queryable; runId: string
         const role = await guild.roles.fetch(ch.target_id).catch(() => null);
         if (!role) continue;
         if (role.members.size > 0) {
-          out.kept.push(`@${role.name} (${role.members.size} medlemmar har den)`);
+          out.kept.push(`@${role.name} (${role.members.size === 1 ? '1 medlem har den' : `${role.members.size} medlemmar har den`})`);
           continue;
         }
         await role.delete(reason);
@@ -600,10 +613,11 @@ export async function undoRun(opts: { guild: Guild; db: Queryable; runId: string
     }
   }
   await db.query(`UPDATE bot.setup_runs SET status = 'undone', undone_at = now() WHERE id = $1`, [runId]);
-  // Drop bindings that point at things that no longer exist.
+  // Drop bindings that point at things that no longer exist. Message bindings (role picker, music panel)
+  // can't be checked from the cache; their owners re-post when the message is gone.
   const bindings = await loadBindings(db, guild.id);
   for (const [key, id] of Object.entries(bindings)) {
-    const exists = guild.channels.cache.has(id) || guild.roles.cache.has(id) || key === ROLE_PICKER_BINDING;
+    const exists = guild.channels.cache.has(id) || guild.roles.cache.has(id) || key.startsWith('msg.');
     if (!exists) await db.query('DELETE FROM bot.setup_bindings WHERE guild_id = $1 AND blueprint_key = $2', [guild.id, key]);
   }
   bindingsCache.delete(guild.id);

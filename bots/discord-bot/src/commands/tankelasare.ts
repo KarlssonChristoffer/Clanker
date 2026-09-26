@@ -31,7 +31,7 @@ import {
   type Answer,
 } from '../jev/mindreader/engine.js';
 import { loadMatrix, type LoadedMatrix } from '../jev/mindreader/matrix.js';
-import { bar, pick, requireGuildId } from './_shared.js';
+import { bar, pick, plural, requireGuildId } from './_shared.js';
 
 const GAME_TTL_MS = 30 * 60_000;
 const MAX_TOTAL_QUESTIONS = 20;
@@ -100,7 +100,7 @@ function guessView(game: Game) {
   const p = game.posterior[game.guess!]!;
   const embed = new EmbedBuilder()
     .setTitle('🧠 Tankeläsaren gissar…')
-    .setDescription(`Du tänker på… **${cand.sv}**!\n-# ${Math.round(p * 100)} % säker efter ${game.questions} frågor`)
+    .setDescription(`Du tänker på… **${cand.sv}**!\n-# ${Math.round(p * 100)} % säker efter ${plural(game.questions, 'fråga', 'frågor')}`)
     .setColor(0xfee75c);
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder().setCustomId(customId('mind', 'g', game.id, 'r')).setLabel('Rätt!').setEmoji('🎉').setStyle(ButtonStyle.Success),
@@ -114,7 +114,7 @@ function endView(game: Game, won: boolean) {
     ? new EmbedBuilder()
         .setTitle('🧠 Tankeläsaren vann!')
         .setDescription(
-          `${pick(['Jag visste det.', 'Som att läsa en öppen bok.', 'Ingen hemlighet är säker hos mig.'])} Det var **${game.candidates[game.guess!]!.sv}**, klart på ${game.questions} frågor.`,
+          `${pick(['Jag visste det.', 'Som att läsa en öppen bok.', 'Ingen hemlighet är säker hos mig.'])} Det var **${game.candidates[game.guess!]!.sv}**, klart på ${plural(game.questions, 'fråga', 'frågor')}.`,
         )
         .setColor(0x57f287)
     : new EmbedBuilder()

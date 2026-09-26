@@ -41,6 +41,20 @@ describe('handleInteractionError', () => {
     expect(i.reply).not.toHaveBeenCalled();
   });
 
+  it('never overwrites the message behind a deferred button (panel, raid post)', async () => {
+    const i = {
+      ...fakeCommand({ deferred: true }),
+      type: 3,
+      customId: 'music:skip',
+      isChatInputCommand: () => false,
+      isMessageComponent: () => true,
+    };
+    await handleInteractionError(i as unknown as Interaction, new Error('boom'));
+    expect(i.editReply).not.toHaveBeenCalled();
+    expect(i.followUp).toHaveBeenCalledOnce();
+    expect(((i.followUp.mock.calls[0] as unknown[])[0] as { flags: number }).flags).toBe(MessageFlags.Ephemeral);
+  });
+
   it('follows up when a reply was already sent', async () => {
     const i = fakeCommand({ replied: true });
     await handleInteractionError(i as unknown as Interaction, new Error('boom'));
