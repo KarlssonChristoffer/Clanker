@@ -16,6 +16,7 @@ import {
 import { ping } from './commands/ping.js';
 import { playlist } from './commands/playlist.js';
 import { messageLogHandler } from './message-tracker.js';
+import { jevModule } from './jev/module.js';
 
 const coreModule: BotModule = {
   name: 'core',
@@ -29,7 +30,7 @@ const musicModule: BotModule = {
 };
 
 export function loadModules(): BotModule[] {
-  const modules: BotModule[] = [coreModule, musicModule];
+  const modules: BotModule[] = [coreModule, musicModule, jevModule];
   const adminModule: BotModule = {
     name: 'admin',
     commands: [createAdminCommand()],
