@@ -147,6 +147,25 @@ async function recordMusicPlaybackLog(params: {
 
 const players = new Map<string, GuildPlayer>();
 
+function isConnectionUsable(connection: VoiceConnection): boolean {
+  return connection.state.status !== VoiceConnectionStatus.Destroyed &&
+    connection.state.status !== VoiceConnectionStatus.Disconnected;
+}
+
+function isActivelyPlaying(gp: GuildPlayer | undefined): gp is GuildPlayer {
+  return !!gp &&
+    gp.player.state.status !== AudioPlayerStatus.Idle &&
+    gp.connection.state.status === VoiceConnectionStatus.Ready;
+}
+
+function destroyGuildPlayer(gid: string, gp: GuildPlayer): void {
+  killActiveYtdlp(gid);
+  if (gp.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    gp.connection.destroy();
+  }
+  players.delete(gid);
+}
+
 function isBenignYtdlpShutdownMessage(line: string): boolean {
   return /broken pipe|unable to write data|errno\s*32|errno\s*22|invalid argument/i.test(line);
 }
@@ -858,6 +877,12 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
   const tr: Track = { ...track, channelId: voiceSnowflake(track.channelId) };
   let gp = players.get(gid);
 
+  if (gp && !isConnectionUsable(gp.connection)) {
+    log.warn(`Recreating unusable voice connection (${gp.connection.state.status})`);
+    destroyGuildPlayer(gid, gp);
+    gp = undefined;
+  }
+
   // Ensure we have a voice connection
   if (!gp || gp.connection.state.status === VoiceConnectionStatus.Destroyed) {
     let guild = client.guilds.cache.get(gid);
@@ -901,6 +926,16 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
     });
 
     connection.on('stateChange', (oldState, newState) => {
+      if (newState.status === VoiceConnectionStatus.Disconnected) {
+        setTimeout(() => {
+          const current = players.get(gid);
+          if (current?.connection !== connection) return;
+          if (connection.state.status !== VoiceConnectionStatus.Disconnected) return;
+          log.warn('Voice connection stayed disconnected; tearing down stale player');
+          destroyGuildPlayer(gid, current);
+          void clearNowPlaying(gid);
+        }, 5_000);
+      }
       log.debug(`Voice state: ${oldState.status} → ${newState.status}`);
     });
 
@@ -1084,13 +1119,8 @@ export async function enqueue(
     const pl = await resolvePlaylist(query, requestedBy, cid);
     if (!pl || !pl.tracks.length) return null;
 
-    const gp = players.get(gid);
-    const isPlaying = gp &&
-      gp.player.state.status !== AudioPlayerStatus.Idle &&
-      gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
     const [first, ...rest] = pl.tracks;
-    if (isPlaying) {
+    if (isActivelyPlaying(players.get(gid))) {
       for (const t of pl.tracks) await addToQueue(gid, t);
     } else {
       await playTrack(client, gid, first!);
@@ -1102,12 +1132,7 @@ export async function enqueue(
   const track = await resolveTrack(query, requestedBy, cid);
   if (!track) return null;
 
-  const gp = players.get(gid);
-  const isPlaying = gp &&
-    gp.player.state.status !== AudioPlayerStatus.Idle &&
-    gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
-  if (isPlaying) {
+  if (isActivelyPlaying(players.get(gid))) {
     await addToQueue(gid, track);
   } else {
     await playTrack(client, gid, track);
@@ -1169,7 +1194,11 @@ export async function resume(guildId: string): Promise<void> {
   if (!gp) return;
   gp.player.unpause();
   await getPool().query(
-    'UPDATE bot.music_now_playing SET is_paused = false WHERE guild_id = $1',
+    `UPDATE bot.music_now_playing
+     SET
+       started_at = now() - greatest(extract(epoch from (updated_at - started_at)), 0) * interval '1 second',
+       is_paused = false
+     WHERE guild_id = $1`,
     [gid],
   );
   void recordMusicPlaybackLog({
@@ -1404,12 +1433,7 @@ export async function playPlaylist(
     durationSec: r.duration_sec, source: r.source, requestedBy: userId, channelId: cid,
   }));
 
-  const gp = players.get(gid);
-  const isPlaying = gp &&
-    gp.player.state.status !== AudioPlayerStatus.Idle &&
-    gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
-  if (isPlaying) {
+  if (isActivelyPlaying(players.get(gid))) {
     for (const t of tracks) await addToQueue(gid, t);
   } else {
     const [first, ...rest] = tracks;

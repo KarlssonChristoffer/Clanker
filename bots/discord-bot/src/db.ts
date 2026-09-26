@@ -2,11 +2,19 @@ import pg from 'pg';
 
 let pool: pg.Pool | null = null;
 
+/** Hosted Postgres (Supabase) needs TLS; local/Docker Postgres does not. PGSSLMODE overrides. */
+function shouldUseSsl(databaseUrl: string): boolean {
+  if (process.env.PGSSLMODE === 'disable') return false;
+  if (process.env.PGSSLMODE === 'require') return true;
+  return /supabase\.(co|com)|pooler\.supabase\.com/i.test(databaseUrl);
+}
+
 export function initDb(databaseUrl: string): pg.Pool {
   pool = new pg.Pool({
     connectionString: databaseUrl,
     max: 5,
     connectionTimeoutMillis: 10_000,
+    ssl: shouldUseSsl(databaseUrl) ? { rejectUnauthorized: false } : undefined,
   });
   return pool;
 }
