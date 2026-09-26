@@ -22,7 +22,7 @@ import { resolveHubMigrationsDir } from './resolve-hub-migrations-dir.js';
 import { checkYtDlpAtStartup } from './media-env.js';
 import { initConfig } from './core/config.js';
 import { childLogger, logger } from './core/logger.js';
-import { installProcessHandlers, onShutdown } from './core/lifecycle.js';
+import { installProcessHandlers, onShutdown, shutdown } from './core/lifecycle.js';
 import { syncSlashCommands } from './core/command-sync.js';
 import { CommandRegistry } from './core/commands.js';
 import { ComponentRegistry } from './core/components.js';
@@ -142,6 +142,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   logger.fatal({ err }, 'startup failed');
-  // Let pino flush before exiting.
-  setImmediate(() => process.exit(1));
+  // Close whatever already started (HTTP server, DB pool) before exiting; an abrupt exit with an open
+  // HTTP handle trips a libuv assertion on Windows.
+  void shutdown('startup failed', 1);
 });
