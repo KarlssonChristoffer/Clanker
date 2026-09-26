@@ -110,6 +110,11 @@ services:
     build:
       context: .
       dockerfile: apps/discord-hub-web/Dockerfile
+      # Vite bakes these in at build time (.env is not part of the build context). Rebuild after changing them.
+      args:
+        VITE_DISCORD_HUB_GUILD_ID: ${VITE_DISCORD_HUB_GUILD_ID:-}
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_WHEEL_COLLAB_URL: ${VITE_WHEEL_COLLAB_URL:-}
     container_name: discord-hub-web
     ports:
       - "${DISCORD_HUB_WEB_PORT:-4173}:80"
