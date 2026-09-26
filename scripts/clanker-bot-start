@@ -63,12 +63,12 @@ echo "clanker-bot-start: migrationer klara."
 
 # Bygg och starta discord-boten (bridge eller host-nät).
 BOT_SVC=discord-bot
-COMPOSE_PROFILES=(--profile discord)
+COMPOSE_PROFILES=(--profile discord-bridge)
 if [[ "$HOST_NETWORK" -eq 1 ]]; then
   BOT_SVC=discord-bot-host
   COMPOSE_PROFILES=(--profile discord-host)
   echo "clanker-bot-start: host-network — stoppar discord-bot om den körs (samma token)..."
-  docker compose --profile discord stop discord-bot 2>/dev/null || true
+  docker compose --profile discord-bridge stop discord-bot 2>/dev/null || true
 fi
 
 echo "clanker-bot-start: bygger och startar ${BOT_SVC}..."

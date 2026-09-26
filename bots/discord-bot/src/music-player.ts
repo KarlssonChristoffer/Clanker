@@ -17,7 +17,7 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { type Client } from 'discord.js';
 import playdl from 'play-dl';
-import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath } from './media-env.js';
+import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath, ytdlpExtraArgs } from './media-env.js';
 import { getPool } from './db.js';
 
 /** yt-dlp `--download-sections` start timestamp, e.g. *1:30-inf (from 90s to end). */
@@ -1050,6 +1050,7 @@ async function startStream(player: AudioPlayer, track: Track, guildId: string, s
       '--format', 'bestaudio/best',
       '--output', '-',
       '--quiet', '--no-warnings', '--no-playlist', '--no-check-certificates',
+      ...ytdlpExtraArgs(),
     ];
     /* Seek: `--downloader ffmpeg` + `ffmpeg_i:-ss` is ignored for YouTube's progressive HTTP
        (yt-dlp uses the native HTTP downloader). Partial download via sections requires ffmpeg. */

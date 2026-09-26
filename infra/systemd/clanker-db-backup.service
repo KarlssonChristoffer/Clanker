@@ -1,0 +1,14 @@
+# Nightly Postgres backup for Clanker. Install: see scripts/migrate-to-tincan.md ("Nattlig backup").
+# Adjust WorkingDirectory/ExecStart if the repo is not in /opt/Clanker.
+[Unit]
+Description=Clanker Postgres backup (pg_dump with 7 daily / 4 weekly rotation)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/Clanker
+Environment=BACKUP_DIR=/var/backups/clanker
+ExecStart=/opt/Clanker/scripts/db-backup.sh
+Nice=10
+IOSchedulingClass=idle

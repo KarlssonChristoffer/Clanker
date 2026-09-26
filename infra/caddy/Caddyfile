@@ -2,9 +2,15 @@
 # Se docs/docker.md — du behöver DNS eller /etc/hosts som pekar hit.
 # Explicit http:// — annars försöker Caddy HTTPS (443), som vi inte exponerar i Compose.
 
-# Prod (nginx i containrar)
+# Prod (nginx i containrar). /api/* går till discord-hub-api (samma origin → cookies fungerar).
+# Discord OAuth-redirect i prod: http://<CLANKER_DISCORD_HOST>/api/auth/discord/callback
 http://{$CLANKER_DISCORD_HOST} {
-	reverse_proxy discord-hub-web:80
+	handle /api/* {
+		reverse_proxy discord-hub-api:3001
+	}
+	handle {
+		reverse_proxy discord-hub-web:80
+	}
 }
 
 http://{$CLANKER_DEVTOOLS_HOST} {

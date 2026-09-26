@@ -1,30 +1,54 @@
+# Profiler (se docs/docker.md):
+#   db             clanker-db (Postgres)
+#   discord        discord-hub-web + discord-hub-api
+#   discord-host   discord-bot-host (boten med host-nät — krävs för Discord-röst/UDP på Linux)
+#   discord-bridge discord-bot (bridge-nät; röst fungerar oftast inte — bara för felsökning)
+#   caddy          clanker-caddy (reverse proxy)
+#   devtools       dev-tools-web
+#   pihole         clanker-pihole (bara på Pi:n efter flytten till tincan)
+# Kör ALDRIG discord-bot och discord-bot-host samtidigt (samma token = två gateway-sessioner).
+
+# Docker log rotation for every service: 3 × 10 MB per container.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Bot config: everything from .env, plus the few names the bot expects that differ from the hub's names.
+x-discord-bot-env: &discord-bot-env
+  DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+  DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID:-${DISCORD_CLIENT_ID}}
+  DISCORD_GUILD_ID: ${DISCORD_GUILD_ID:-${VITE_DISCORD_HUB_GUILD_ID:-}}
+  MUSIC_BOT_HTTP_PORT: "3012"
+
 services:
-  # Discord-bot (musikbot, voice-tracker, slash-kommandon). Start: docker compose --profile discord up -d discord-bot
+  # Discord-bot i bridge-nät (felsökning). Start: docker compose --profile discord-bridge up -d discord-bot
   # Voice uses UDP to Discord; Docker Desktop / bridge NAT often prevents a stable voice session.
-  # On a Pi/Linux host, `network_mode: host` can help (then adjust DATABASE_URL to reach Postgres).
   discord-bot:
-    profiles: ["discord"]
+    profiles: ["discord-bridge"]
     build:
       context: .
       dockerfile: bots/discord-bot/Dockerfile
     container_name: discord-bot
+    env_file:
+      - .env
     environment:
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
-      DISCORD_APPLICATION_ID: ${DISCORD_CLIENT_ID}
-      DISCORD_GUILD_ID: ${VITE_DISCORD_HUB_GUILD_ID}
+      <<: *discord-bot-env
       DATABASE_URL: postgresql://${POSTGRES_USER:-clanker}:${POSTGRES_PASSWORD}@clanker-db:5432/${POSTGRES_DB:-clanker_discord}
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
-      MUSIC_BOT_HTTP_PORT: "3012"
+      MUSIC_BOT_HTTP_BIND: 0.0.0.0
     ports:
       - "127.0.0.1:3012:3012"
+    logging: *default-logging
     restart: unless-stopped
 
-  # Samma bot som discord-bot men med network_mode: host s att Discord-röst (UDP) fungerar på Linux/Pi.
-  # Stoppa den bridgeade boten först (samma token): docker compose stop discord-bot
+  # Samma bot som discord-bot men med network_mode: host så att Discord-röst (UDP) fungerar på Linux (tincan).
+  # Stoppa den bridgeade boten först (samma token): docker compose --profile discord-bridge stop discord-bot
   # Start: docker compose --profile db --profile discord-host up -d --build discord-bot-host
   # Docker Desktop (Windows/macOS): host network i praktiken ej som på Linux — kör boten med npm på värden i stället.
   # DATABASE_URL: Postgres måste nås från värdens nät (127.0.0.1 om clanker-db exponerar 5432 mot localhost).
+  # MUSIC_BOT_HTTP_BIND: discord-hub-api (bridge) når boten via host.docker.internal → boten måste lyssna på 0.0.0.0.
+  #   Alla musik-endpoints kräver då X-Clanker-Secret (BOT_HTTP_SECRET); blockera 3012 mot LAN i brandväggen.
   discord-bot-host:
     profiles: ["discord-host"]
     build:
@@ -32,14 +56,39 @@ services:
       dockerfile: bots/discord-bot/Dockerfile
     container_name: discord-bot-host
     network_mode: host
+    env_file:
+      - .env
     environment:
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
-      DISCORD_APPLICATION_ID: ${DISCORD_CLIENT_ID}
-      DISCORD_GUILD_ID: ${VITE_DISCORD_HUB_GUILD_ID}
+      <<: *discord-bot-env
       DATABASE_URL: ${DISCORD_BOT_HOST_DATABASE_URL:-postgresql://${POSTGRES_USER:-clanker}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-clanker_discord}}
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET}
-      MUSIC_BOT_HTTP_PORT: "3012"
+      MUSIC_BOT_HTTP_BIND: ${MUSIC_BOT_HTTP_BIND:-0.0.0.0}
+    logging: *default-logging
+    restart: unless-stopped
+
+  # Hub-API (Hono): OAuth, profiler, League, musikproxy. Caddy routar /api/* hit.
+  # Start: docker compose --profile discord up -d --build discord-hub-api
+  discord-hub-api:
+    profiles: ["discord"]
+    build:
+      context: .
+      dockerfile: apps/discord-hub-api/Dockerfile
+    container_name: discord-hub-api
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3001"
+      WHEEL_COLLAB_PORT: "3002"
+      DISCORD_HUB_API_LISTEN_HOST: 0.0.0.0
+      DATABASE_URL: ${DISCORD_HUB_API_DATABASE_URL:-postgresql://${POSTGRES_USER:-clanker}:${POSTGRES_PASSWORD}@clanker-db:5432/${POSTGRES_DB:-clanker_discord}}
+      # Boten kör med host-nät → nås från bridge via värdens gateway.
+      MUSIC_BOT_HTTP_URL: ${DISCORD_HUB_API_MUSIC_BOT_HTTP_URL:-http://host.docker.internal:3012}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      # Wheel-collab WebSocket (webben ansluter till ws://<värd>:3002). API:t självt nås via Caddy /api.
+      - "${WHEEL_COLLAB_PUBLISH_PORT:-3002}:3002"
+    logging: *default-logging
     restart: unless-stopped
 
   # Discord-hub (Vite/React). Start: docker compose --profile discord up -d discord-hub-web
@@ -51,6 +100,7 @@ services:
     container_name: discord-hub-web
     ports:
       - "${DISCORD_HUB_WEB_PORT:-4173}:80"
+    logging: *default-logging
     restart: unless-stopped
 
   # Lokala dev-verktyg (dokumentation m.m.). Start: docker compose --profile devtools up -d dev-tools-web
@@ -62,9 +112,10 @@ services:
     container_name: dev-tools-web
     ports:
       - "${DEV_TOOLS_WEB_PORT:-4174}:80"
+    logging: *default-logging
     restart: unless-stopped
 
-  # Reverse proxy (HTTP) — prod-webb, Pi-hole-admin på värd, dev-Vite på värd. Start: --profile caddy (+ discord/devtools för prod-upstreams).
+  # Reverse proxy (HTTP) — prod-webb (+ /api), Pi-hole-admin på värd, dev-Vite på värd. Start: --profile caddy.
   clanker-caddy:
     profiles: ["caddy"]
     image: caddy:2-alpine
@@ -84,9 +135,10 @@ services:
       CLANKER_DISCORD_DEV_UPSTREAM: ${CLANKER_DISCORD_DEV_UPSTREAM:-http://host.docker.internal:5173}
       CLANKER_DEVTOOLS_DEV_HOST: ${CLANKER_DEVTOOLS_DEV_HOST:-dev.clanker.tools}
       CLANKER_DEVTOOLS_DEV_UPSTREAM: ${CLANKER_DEVTOOLS_DEV_UPSTREAM:-http://host.docker.internal:5174}
+    logging: *default-logging
     restart: unless-stopped
 
-  # PostgreSQL — aktivera när du har backend. Start: docker compose --profile db up -d clanker-db
+  # PostgreSQL. Start: docker compose --profile db up -d clanker-db
   clanker-db:
     profiles: ["db"]
     image: postgres:16-alpine
@@ -103,9 +155,17 @@ services:
     ports:
       # Standard 127.0.0.1 (endast localhost). På workstation mot LAN: POSTGRES_BIND_ADDRESS=0.0.0.0 + brandvägg.
       - "${POSTGRES_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
     restart: unless-stopped
 
+  # Pi-hole: stannar på Raspberry Pi:n. Där: COMPOSE_PROFILES=pihole (eller --profile pihole) i .env.
   clanker-pihole:
+    profiles: ["pihole"]
     env_file:
       - .env
     image: pihole/pihole:latest
@@ -118,6 +178,7 @@ services:
       - "./etc-dnsmasq.d:/etc/dnsmasq.d"
     cap_add:
       - NET_ADMIN
+    logging: *default-logging
 
 volumes:
   clanker-pgdata:

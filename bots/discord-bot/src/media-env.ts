@@ -3,6 +3,7 @@
  * prism-media normally ignores env; `postinstall` patches it to honour `FFMPEG_PATH` first.
  * Also centralises yt-dlp path resolution (youtube-dl-exec postinstall often skipped / blocked).
  */
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -83,3 +84,64 @@ export function resolveYtDlpSpawnPath(): string {
 }
 
 void resolveYtDlpSpawnPath();
+
+/** Extra yt-dlp CLI args from `YTDLP_EXTRA_ARGS` (whitespace-separated), e.g. `--js-runtimes node` in Docker. */
+export function ytdlpExtraArgs(): string[] {
+  return (process.env.YTDLP_EXTRA_ARGS ?? '').split(/\s+/).filter(Boolean);
+}
+
+function runYtDlp(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const proc = spawn(resolveYtDlpSpawnPath(), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL');
+      stderr += `\n(timed out after ${timeoutMs} ms)`;
+      done(null);
+    }, timeoutMs);
+    function done(code: number | null): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+    }
+    proc.stdout.on('data', (c: Buffer) => { stdout += c.toString(); });
+    proc.stderr.on('data', (c: Buffer) => { stderr += c.toString(); });
+    proc.once('error', (err) => {
+      stderr += err.message;
+      done(null);
+    });
+    proc.once('close', (code) => done(code));
+  });
+}
+
+export type YtDlpCheck = { ok: true; version: string } | { ok: false; error: string };
+
+type StartupLogger = {
+  info: (obj: object, msg: string) => void;
+  error: (obj: object, msg: string) => void;
+};
+
+/**
+ * Startup self-test: `yt-dlp --version` must run inside the image (catches a missing python3 or binary).
+ * With `YTDLP_AUTO_UPDATE=1` a release binary is updated in the background afterwards (YouTube breaks old versions).
+ */
+export async function checkYtDlpAtStartup(log: StartupLogger): Promise<YtDlpCheck> {
+  const bin = resolveYtDlpSpawnPath();
+  const res = await runYtDlp(['--version'], 15_000);
+  if (res.code !== 0 || !res.stdout) {
+    const error = res.stderr || `exit code ${res.code}`;
+    log.error({ bin, error }, 'yt-dlp self-test failed; YouTube/Spotify playback will not work');
+    return { ok: false, error };
+  }
+  log.info({ bin, version: res.stdout, extraArgs: ytdlpExtraArgs() }, 'yt-dlp self-test ok');
+  if (process.env.YTDLP_AUTO_UPDATE === '1') {
+    void runYtDlp(['--update'], 120_000).then((u) => {
+      const line = (u.stdout || u.stderr).split('\n').filter(Boolean).pop() ?? '';
+      log.info({ code: u.code, result: line.slice(0, 300) }, 'yt-dlp auto-update finished');
+    });
+  }
+  return { ok: true, version: res.stdout };
+}

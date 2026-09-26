@@ -24,7 +24,7 @@ fi
 clanker_load_dotenv
 
 echo "clanker-bot-dev: stoppar Docker-bot om den körs (port/token)..."
-docker compose --profile discord stop discord-bot 2>/dev/null || true
+docker compose --profile discord-bridge stop discord-bot 2>/dev/null || true
 docker compose --profile discord-host stop discord-bot-host 2>/dev/null || true
 
 echo "clanker-bot-dev: startar clanker-db..."

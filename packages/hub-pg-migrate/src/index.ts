@@ -4,9 +4,13 @@ import type pg from "pg";
 
 export type MigrationLogger = (line: string) => void;
 
+/** Arbitrary but fixed key: serialises migration runs across processes (hub-api and discord-bot start together). */
+const MIGRATION_LOCK_KEY = 726_150_013;
+
 /**
  * Applies `.sql` files in `migrationsDir` (sorted by filename) that are not yet recorded in `public.schema_migrations`.
  * Safe to call on every process start; already-applied versions are skipped.
+ * Holds a session-level advisory lock while running so concurrent starters don't apply the same file twice.
  */
 export async function runSqlMigrations(
   pool: pg.Pool,
@@ -23,6 +27,7 @@ export async function runSqlMigrations(
   const client = await pool.connect();
   try {
     await client.query("SELECT 1 AS ok");
+    await client.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_KEY]);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS public.schema_migrations (
@@ -55,6 +60,7 @@ export async function runSqlMigrations(
       }
     }
   } finally {
+    await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_KEY]).catch(() => undefined);
     client.release();
   }
 }

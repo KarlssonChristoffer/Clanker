@@ -31,6 +31,7 @@ import {
 import { startMusicHttpServer } from './music-http.js';
 import { getPool } from './db.js';
 import { resolveHubMigrationsDir } from './resolve-hub-migrations-dir.js';
+import { checkYtDlpAtStartup } from './media-env.js';
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -380,6 +381,10 @@ async function main(): Promise<void> {
     throw e;
   }
   await initPlayDl();
+  await checkYtDlpAtStartup({
+    info: (obj, msg) => console.log(`[yt-dlp] ${msg}`, obj),
+    error: (obj, msg) => console.error(`[yt-dlp] ${msg}`, obj),
+  });
   registerVoiceTracker(client);
   registerGuildTracker(client);
   registerMessageTracker(client);
