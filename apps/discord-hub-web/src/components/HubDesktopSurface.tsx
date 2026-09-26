@@ -6,6 +6,7 @@ import {
   type GridStackEngine,
   type GridStackMoveOpts,
   type GridStackNode,
+  type GridStackOptions,
   type GridStackWidget,
 } from "gridstack/dist/gridstack.js";
 import { Button } from "@clanker/ui/components/button";
@@ -49,7 +50,11 @@ const HUB_WIDGET_HOLD_MOVE_CANCEL_PX = 14;
 const HUB_WIDGET_HOLD_CANCEL_SELECTOR =
   'button,a[href],input,textarea,select,option,[contenteditable="true"],[role="button"],label,.ui-resizable-handle,.hub-widget-hide-toolbar,[data-hub-no-drag]';
 
-type GridStackWithMoveWrite = GridStack & {
+/** `moveNode` is private in GridStack's typings, so an intersection with `GridStack` collapses to `never`. */
+type GridStackWithMoveWrite = {
+  engine: GridStackEngine;
+  cellWidth(): number;
+  getCellHeight(forcePixel?: boolean): number;
   moveNode(n: GridStackNode, m: GridStackMoveOpts): void;
   _writeAttr(el: HTMLElement, n: GridStackNode): void;
 };
@@ -89,12 +94,6 @@ export type { HubDesktopWidgetLayout };
 type HubSurfaceCardItem =
   | ({ kind: "widget"; hideable: true } & HubDesktopWidget)
   | ({ kind: "container"; hideable: false } & HubDesktopContainer);
-
-function toneVariant(tone: "useful" | "social" | "chaos"): "outline" | "secondary" | "destructive" {
-  if (tone === "chaos") return "destructive";
-  if (tone === "social") return "secondary";
-  return "outline";
-}
 
 function blurClass(blurStrength: 0 | 1 | 2 | 3): string {
   if (blurStrength === 0) return "";
@@ -548,7 +547,7 @@ export default function HubDesktopSurface({
       const onMove = (e: PointerEvent) => {
         const s = externalDragSessionRef.current;
         if (!s || e.pointerId !== s.pointerId) return;
-        const g = gridRef.current as GridStackWithMoveWrite | null;
+        const g = gridRef.current as unknown as GridStackWithMoveWrite | null;
         if (!g) return;
         const cw = Math.max(1, g.cellWidth());
         const ch = Math.max(1, g.getCellHeight(true));
@@ -668,7 +667,7 @@ export default function HubDesktopSurface({
         float: gridCompaction === "none",
         overlap: true,
         draggable: { handle: ".hub-widget-drag-surface" },
-      },
+      } as GridStackOptions,
       root,
     );
     gridRef.current = grid;
@@ -784,14 +783,6 @@ export default function HubDesktopSurface({
           <div className="block lg:hidden">
             <div className="grid gap-4">
               {visibleWidgets.map((widget) => {
-                const itemCaps = policyCapabilitiesForSurfaceItem({
-                  kind: widget.kind,
-                  id: widget.id,
-                  label: widget.label,
-                  tone: widget.tone,
-                  variant,
-                  layoutEditMode,
-                });
                 const vp =
                   widget.kind === "widget"
                     ? { ...DEFAULT_WIDGET_VISUAL_PREFS, ...widgetVisualPrefsById[widget.id] }

@@ -20,7 +20,7 @@ Relaterade detaljer:
 - `GET /api/auth/me` används av webben för session/profil.
 
 **Valfritt**
-- `apps/discord-bot` finns som separat tjänst (om/when du behöver den).
+- **`bots/discord-bot`** (Clanker-boten) är enda processen med Discord-gateway: musik, trackers, Jev, WoW, setup m.m. Se `bots/discord-bot/README.md`.
 
 ## Katalogkarta (snabba ingångar)
 
@@ -33,7 +33,8 @@ Relaterade detaljer:
 
 **Backend**
 - `apps/discord-hub-api/src/index.ts` — huvudsakliga endpoints.
-- `apps/discord-hub-api/src/discord-*.ts` — OAuth, proxy, gateway, bot‑REST.
+- `apps/discord-hub-api/src/discord-*.ts` — OAuth, proxy, bot‑REST.
+- `apps/discord-hub-api/src/bot-live.ts` — live-status/röst från botens tabeller (ingen egen gateway).
 - `apps/discord-hub-api/src/riot-lol.ts` — League‑integration (Riot **match-v5**: match‑ID‑lista per PUUID, paginerat 100 åt gången; utan `type`‑filter får du alla kötyper Riot returnerar inkl. många customs. `gameMode` / `gameType` / `mapId` sparas i `stats.league_matches` efter migration `012_league_match_modes`).
 - Periodisk League‑auto‑sync i API‑processen är **av** som standard; sätt `LEAGUE_AUTO_SYNC_ENABLED=1` i API‑`.env` för att starta den. `LEAGUE_MATCH_FETCH_COUNT` styr hur djupt den hämtar match‑ID:n per användare och cykel när den är påslagen.
 - `GET /api/stats/league/matches` — paginerad lista över inspelade matcher (för hubbens League‑statistik‑vy).
@@ -104,9 +105,9 @@ Många ser **502 Bad Gateway** eller en tom/felande sida **efter** att de klicka
 
 ---
 
-**„Gateway” på dashboarden** (badge „frånkopplad” / varningstext) är **Discord WebSocket** för live röst m.m.: kräver `DISCORD_BOT_TOKEN` och `DISCORD_GATEWAY_GUILD_IDS` som innehåller **samma guild** som `VITE_DISCORD_HUB_GUILD_ID`. Det är **ortogonalt** mot OAuth.
+**„Gateway” på dashboarden** (badge „frånkopplad” / varningstext) visar **discord-botens** status: boten är den enda processen med Discord-gateway och skriver en heartbeat till `bot.runtime_status` var 30:e sekund samt röststatus till `bot.guild_voice_states`. Hub-API:t läser därifrån. Badgen blir „frånkopplad” om boten inte kör, inte är ansluten till Discord eller inte skickat heartbeat på 90 s. Det är **ortogonalt** mot OAuth.
 
-**Viktigt:** bara **en** process åt gången får köra **Gateway** med samma bot-token (t.ex. inte både din maskin och polarens med samma `DISCORD_BOT_TOKEN` + gateway-guilds — då konkurrerar de och anslutningen blir ostadig).
+**Viktigt:** bara **en** bot-process åt gången med samma `DISCORD_BOT_TOKEN` (inte både Docker och `npm run dev:discord-bot`, och inte två maskiner).
 
 ## Musikbot (`discord-hub` + musik i webben)
 
@@ -119,7 +120,7 @@ Webb + **discord-hub-api** räcker **inte** för kö/playback. Då behövs även
 
 3. **`DATABASE_URL`** för **både** hub-api och discord-bot mot **samma** Postgres (kö + `now_playing` ligger i DB). Kör migrationer om det saknas tabeller.
 
-4. **`bots/discord-bot/.env`:** `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, `DATABASE_URL` (samma som hubben). Valfritt: Spotify-nycklar om ni använder Spotify.
+4. **`bots/discord-bot/.env`:** `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, `DATABASE_URL` (samma som hubben). Valfritt: Spotify-nycklar (Spotify-länkar fungerar även utan, via publika sidor).
 
 5. **Röst i Discord:** användaren som köar musik ska vara **i en röstkanal**; bot-rollen behöver **Connect** + **Speak** (och ev. **Use Voice Activity**). På **Windows** med bot i **Docker Desktop** fungerar röst ofta **inte** (UDP/bridge) — kör botten med **`npm run dev:discord-bot` på värden** i stället, eller `discord-bot-host` på Linux/Pi (`docs/docker.md`).
 
@@ -131,7 +132,7 @@ Webb + **discord-hub-api** räcker **inte** för kö/playback. Då behövs även
 
 Kommandon (play/skip/…) går alltid till **discord-bot**. **Kö och nu spelas** läses också från **botens** databas när `MUSIC_BOT_HTTP_URL` är satt — då behöver hub-api **inte** dela `DATABASE_URL` med botten bara för att visa musik. Spellistor, voice-snapshot i DB m.m. följer fortfarande **respektive** hub-api:s Postgres om ni inte synkar den.
 
-**Discord Gateway** (live voice i hubben) tillåter **inte** två samtidiga anslutningar med **samma bot-token**. Låt bara **en** `discord-hub-api` köra med `DISCORD_GATEWAY_GUILD_IDS` satt; på övriga instanser: lämna gateway-listan tom (voice-widgeten blir begränsad men OAuth/musik via delad musikbot kan fungera).
+**Live voice** i hubben kommer från botens tabeller (`bot.guild_voice_states`, `bot.runtime_status`). En hub-api som inte delar Postgres med boten visar därför ingen live-röst. OAuth och musik via `MUSIC_BOT_HTTP_URL` fungerar ändå.
 
 För att en **annan dator** ska nå musik-HTTP: sätt `MUSIC_BOT_HTTP_BIND=0.0.0.0` på bot-värden, öppna brandvägg till `MUSIC_BOT_HTTP_PORT`, och sätt polarens `MUSIC_BOT_HTTP_URL` till `http://<din-lan-ip>:3012` (byt port om ni ändrat den).
 
@@ -156,8 +157,43 @@ Snabb guide:
 
 ## Produktionskörning (kort)
 
+Hela Discord-stacken körs på **tincan** (Pi:n kör bara Pi-hole). Flytt och drift: `scripts/migrate-to-tincan.md`.
+
 ```bash
-docker compose --profile discord up -d --build discord-hub-web
+# tincan: Postgres, hub-api + webb, boten (host-nät för röst), Caddy (/api → hub-api)
+docker compose --profile db --profile discord --profile discord-host --profile caddy up -d --build
 ```
 
+Profilen `discord` = `discord-hub-web` + `discord-hub-api`. Bridge-boten ligger i `discord-bridge` (bara för felsökning).
+Pi-hole har profilen `pihole`. Nattlig backup: `scripts/db-backup.sh` + `infra/systemd/clanker-db-backup.timer`.
 Vill du köra via Caddy‑domäner, se `docs/docker.md`.
+
+## Discord-boten (Clanker)
+
+Kommandon, arkitektur, intents och behörigheter finns i `bots/discord-bot/README.md`. Manuell testlista för
+testservern Hermes: `TESTPLAN.md`. Alla variabler är kommenterade i `bots/discord-bot/.env.example`. Boten i Docker
+läser rotens `.env` via `env_file`.
+
+| Variabel | Standard | Vad den gör |
+|---|---|---|
+| `DISCORD_GUILD_ID` | – | Guild(s) för guild-scopade slash-kommandon (kommaseparerat), t.ex. Hermes. Tom = globalt. |
+| `DISCORD_FORCE_COMMAND_SYNC` | – | `1` = registrera om kommandona även om hashen är oförändrad. |
+| `BOT_HTTP_SECRET` | – | Delad hemlighet `X-Clanker-Secret` mellan hub-api och botens HTTP (3012). Krävs när boten lyssnar på 0.0.0.0. |
+| `LOG_LEVEL` | `info` | pino-nivå. JSON i produktion, färgad text i dev (`LOG_PRETTY=0` tvingar JSON). |
+| `TYPESAFE_API_KEY` | – | Jev (TypeSafe). Utan nyckel är Jev-funktionerna avstängda. |
+| `TYPESAFE_API_BASE` | `https://api.typesafe.ai` | Jev-API:ts bas-URL. |
+| `JEV_MODEL` | `jev-1.13.0` | Låst modellversion (alias som `jev-latest` flyttar sig). |
+| `JEV_MAX_CONCURRENCY` / `JEV_TIMEOUT_MS` / `JEV_USD_PER_MTOK` / `JEV_REFLEX_COOLDOWN_S` | 4 / 15000 / 0.042 / 60 | Samtidiga anrop, timeout per försök, pris i `/jevstats`, reflex-cooldown. |
+| `SETUP_ALLOWED_GUILD_IDS` | – | Guilds där `/setup` får skapa, flytta och arkivera. Tom = ingenstans. |
+| `WOW_FLAVOR` | `retail` | `retail`, `classic` eller `forever`. Gänget spelar **forever**. |
+| `WOW_REGION` / `WOW_LOCALE` | `eu` / `en_GB` | Blizzard/Raider.IO-region och språk. |
+| `WOW_DEFAULT_REALM` | – | Standardrealm (Forever: ruleset) för `/wow koppla`. Sätts när omröstningen är klar. |
+| `BLIZZARD_CLIENT_ID` / `BLIZZARD_CLIENT_SECRET` | – | Blizzard API (realm-autocomplete på retail, classic-lookup). |
+| `WOW_PROFILE_NAMESPACE` | – | T.ex. `classic1x`. Sätts för Forever när/om Blizzard öppnar ett namespace. |
+| `RAIDERIO_ACCESS_KEY` | – | Högre rate limit hos Raider.IO (retail). |
+| `WOW_RESET_WEEKDAY` / `WOW_RESET_TIME_UTC` | `3` / `04:00` | Weekly reset för "Ny vecka"-inlägget (EU retail: onsdag 04:00 UTC). |
+| `YTDLP_EXTRA_ARGS` / `YTDLP_AUTO_UPDATE` | – / – | Docker-imagen sätter `--js-runtimes node` och `1`. |
+
+**Hub-api** läser `BOT_HTTP_SECRET` (skickas till boten) och behöver inte längre `DISCORD_GATEWAY_GUILD_IDS` eller
+`DISCORD_GATEWAY_INTENTS`. Livevyn läser `bot.runtime_status` och `bot.guild_voice_states`.
+Citatboken nås via `GET /api/bot/guild/:id/quotes`.

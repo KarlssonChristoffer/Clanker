@@ -89,7 +89,7 @@ export function MusicSeekProgressBar({
       cleanup(ev);
       setScrubPct(null);
       const p = getPct(ev.clientX);
-      onSeek(Math.round((p / 100) * track.duration_sec));
+      onSeek(Math.round((p / 100) * (track.duration_sec ?? 0)));
     };
 
     const onCancel = (ev: PointerEvent) => {

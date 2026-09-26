@@ -7,18 +7,24 @@ import {
   entersState,
   generateDependencyReport,
   getVoiceConnection,
+  getVoiceConnections,
   joinVoiceChannel,
   StreamType,
   type AudioPlayer,
   type VoiceConnection,
 } from '@discordjs/voice';
+import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { type Client } from 'discord.js';
 import playdl from 'play-dl';
-import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath } from './media-env.js';
+import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath, ytdlpExtraArgs } from './media-env.js';
+import { fetchSpotifyTitle, fetchSpotifyTrackPublic, parseSpotifyUrl, pickYoutubeMatch, youtubeQueryFor } from './spotify-public.js';
 import { getPool } from './db.js';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('music');
 
 /** yt-dlp `--download-sections` start timestamp, e.g. *1:30-inf (from 90s to end). */
 function ytdlpDownloadSectionFromStartSec(startSec: number): string {
@@ -48,24 +54,14 @@ function ytdlpFfmpegLocationArgs(): string[] {
 function logVoiceReadyFailureHints(): void {
   const inDocker = existsSync('/.dockerenv');
   if (inDocker) {
-    console.error(
-      '[music] Voice never reached Ready (timeout/aborted). In Docker this is usually bridge NAT blocking UDP to Discord.',
-    );
-    console.error(
-      '[music] Fix: Linux/Pi → `discord-bot-host` (compose profile `discord-host`). Docker Desktop → run on host: `npm run bot:dev`.',
-    );
+    log.error('Voice never reached Ready (timeout/aborted). In Docker this is usually bridge NAT blocking UDP to Discord.');
+    log.error('Fix: Linux/Pi → `discord-bot-host` (compose profile `discord-host`). Docker Desktop → run on host: `npm run bot:dev`.');
   } else {
-    console.error(
-      '[music] Voice never reached Ready (timeout/aborted). Signalling/UDP to Discord failed (not Opus/FFmpeg if the report below looks OK).',
-    );
-    console.error(
-      '[music] On Windows: allow Node.js in Windows Defender Firewall (private networks); try with VPN off; ensure the bot role can Connect and Speak in that voice channel.',
-    );
-    console.error(
-      '[music] If it still fails, try another network (e.g. phone hotspot) to rule out ISP/router blocking UDP.',
-    );
+    log.error('Voice never reached Ready (timeout/aborted). Signalling/UDP to Discord failed (not Opus/FFmpeg if the report below looks OK).');
+    log.error('On Windows: allow Node.js in Windows Defender Firewall (private networks); try with VPN off; ensure the bot role can Connect and Speak in that voice channel.');
+    log.error('If it still fails, try another network (e.g. phone hotspot) to rule out ISP/router blocking UDP.');
   }
-  console.error(generateDependencyReport());
+  log.error({ report: generateDependencyReport() }, 'voice dependency report');
 }
 
 export type TrackSource = 'youtube' | 'soundcloud' | 'spotify';
@@ -82,6 +78,18 @@ export type Track = {
 };
 
 const PLAYBACK_HISTORY_MAX = 50;
+
+/**
+ * What changed for a guild, so listeners (the Discord music panel) know what to redraw:
+ * 'track' = a new song started, 'state' = pause/resume/seek/stop, 'queue' = the queue changed.
+ * Emitted after the DB write, from every entry point (slash commands, buttons and the hub over HTTP).
+ */
+export type MusicChange = 'track' | 'state' | 'queue';
+export const musicEvents = new EventEmitter<{ change: [guildId: string, change: MusicChange] }>();
+
+function notifyChange(guildId: string, change: MusicChange): void {
+  musicEvents.emit('change', guildId, change);
+}
 
 type GuildPlayer = {
   player: AudioPlayer;
@@ -147,11 +155,30 @@ async function recordMusicPlaybackLog(params: {
       ],
     );
   } catch (e) {
-    console.warn('[music] music_playback_log:', (e as Error).message);
+    log.warn({ detail: (e as Error).message }, 'music_playback_log');
   }
 }
 
 const players = new Map<string, GuildPlayer>();
+
+function isConnectionUsable(connection: VoiceConnection): boolean {
+  return connection.state.status !== VoiceConnectionStatus.Destroyed &&
+    connection.state.status !== VoiceConnectionStatus.Disconnected;
+}
+
+function isActivelyPlaying(gp: GuildPlayer | undefined): gp is GuildPlayer {
+  return !!gp &&
+    gp.player.state.status !== AudioPlayerStatus.Idle &&
+    gp.connection.state.status === VoiceConnectionStatus.Ready;
+}
+
+function destroyGuildPlayer(gid: string, gp: GuildPlayer): void {
+  killActiveYtdlp(gid);
+  if (gp.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+    gp.connection.destroy();
+  }
+  players.delete(gid);
+}
 
 function isBenignYtdlpShutdownMessage(line: string): boolean {
   return /broken pipe|unable to write data|errno\s*32|errno\s*22|invalid argument/i.test(line);
@@ -307,8 +334,12 @@ function parseSpotifyEmbedPlaylistHtml(html: string): { title: string; rows: Spo
   return rows.length ? { title, rows } : null;
 }
 
-async function fetchSpotifyPlaylistViaEmbed(playlistId: string): Promise<{ title: string; rows: SpotifyEmbedRow[] } | null> {
-  const embedUrl = `https://open.spotify.com/embed/playlist/${encodeURIComponent(playlistId)}`;
+/** Track rows from the public embed page; album and playlist embeds share the same markup (checked 2026-09-26). */
+async function fetchSpotifyListViaEmbed(
+  kind: 'playlist' | 'album',
+  id: string,
+): Promise<{ title: string; rows: SpotifyEmbedRow[] } | null> {
+  const embedUrl = `https://open.spotify.com/embed/${kind}/${encodeURIComponent(id)}`;
   try {
     const res = await fetch(embedUrl, {
       headers: {
@@ -318,14 +349,31 @@ async function fetchSpotifyPlaylistViaEmbed(playlistId: string): Promise<{ title
       },
     });
     if (!res.ok) {
-      console.warn(`[music] Spotify embed page HTTP ${res.status}`);
+      log.warn(`Spotify embed page HTTP ${res.status}`);
       return null;
     }
     return parseSpotifyEmbedPlaylistHtml(await res.text());
   } catch (err) {
-    console.warn('[music] Spotify embed fetch failed:', (err as Error).message);
+    log.warn({ detail: (err as Error).message }, 'Spotify embed fetch failed');
     return null;
   }
+}
+
+/** Albums always, and playlists without keys, come from the embed page. */
+async function resolveSpotifyListViaEmbed(
+  kind: 'playlist' | 'album',
+  id: string,
+  requestedBy: string,
+  channelId: string,
+): Promise<PlaylistResolution | null> {
+  const [embedded, title] = await Promise.all([fetchSpotifyListViaEmbed(kind, id), fetchSpotifyTitle(kind, id)]);
+  if (!embedded?.rows.length) {
+    log.warn({ kind, id }, 'Spotify embed page listed no tracks (private or removed?)');
+    return null;
+  }
+  const tracks = await spotifyTrackNamesToYoutubeTracks(embedded.rows, requestedBy, channelId);
+  if (!tracks.length) return null;
+  return { title: title ?? embedded.title, tracks };
 }
 
 async function tryResolveSpotifyPlaylistFrom403Embed(
@@ -334,14 +382,10 @@ async function tryResolveSpotifyPlaylistFrom403Embed(
   requestedBy: string,
   channelId: string,
 ): Promise<PlaylistResolution | null> {
-  console.warn(
-    '[music] Spotify Web API returned 403 (many editorial/algorithmic playlists are blocked for newer developer apps since Nov 2024). Trying open.spotify.com/embed fallback…',
-  );
-  const embedded = await fetchSpotifyPlaylistViaEmbed(playlistId);
+  log.warn('Spotify Web API returned 403 (many editorial/algorithmic playlists are blocked for newer developer apps since Nov 2024). Trying open.spotify.com/embed fallback…');
+  const embedded = await fetchSpotifyListViaEmbed('playlist', playlistId);
   if (!embedded?.rows.length) {
-    console.warn(
-      '[music] Embed fallback found no tracks. Options: use a playlist you created (public), a YouTube playlist, or request extended Web API access from Spotify.',
-    );
+    log.warn('Embed fallback found no tracks. Options: use a playlist you created (public), a YouTube playlist, or request extended Web API access from Spotify.');
     return null;
   }
   const tracks = await spotifyTrackNamesToYoutubeTracks(
@@ -350,13 +394,11 @@ async function tryResolveSpotifyPlaylistFrom403Embed(
     channelId,
   );
   if (!tracks.length) {
-    console.warn(`[music] Embed listed ${embedded.rows.length} tracks but none resolved on YouTube.`);
+    log.warn(`Embed listed ${embedded.rows.length} tracks but none resolved on YouTube.`);
     return null;
   }
   if (embedded.rows.length > tracks.length) {
-    console.warn(
-      `[music] Embed listed ${embedded.rows.length} tracks; ${tracks.length} resolved on YouTube (rest skipped or search missed).`,
-    );
+    log.warn(`Embed listed ${embedded.rows.length} tracks; ${tracks.length} resolved on YouTube (rest skipped or search missed).`);
   }
   const title = playlistTitle.trim() || embedded.title;
   return { title, tracks };
@@ -370,17 +412,15 @@ async function spotifyTrackNamesToYoutubeTracks(
   if (entries.length === 0) return [];
   const concurrency = playlistYoutubeSearchConcurrency();
   if (entries.length > 3) {
-    console.log(
-      `[music] Spotify→YouTube: matching ${entries.length} tracks (${concurrency} parallel YouTube searches)…`,
-    );
+    log.info(`Spotify→YouTube: matching ${entries.length} tracks (${concurrency} parallel YouTube searches)…`);
   }
   const t0 = Date.now();
   const resolved = await mapWithConcurrency(entries, concurrency, async (t): Promise<Track | null> => {
-    const searchQuery = `${t.name} ${t.artist ?? ''}`.trim();
+    const searchQuery = youtubeQueryFor({ title: t.name, artist: t.artist });
     try {
-      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 1 });
-      if (!results.length) return null;
-      const yt = results[0];
+      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 5 });
+      const yt = pickYoutubeMatch(results, { title: t.name, durationSec: t.durationSec });
+      if (!yt) return null;
       const watchUrl = youtubeWatchUrlFromSearchResult(yt);
       if (!watchUrl) return null;
       const track: Track = {
@@ -395,26 +435,23 @@ async function spotifyTrackNamesToYoutubeTracks(
       };
       return track;
     } catch {
-      console.warn('[music] Could not resolve Spotify track:', searchQuery);
+      log.warn({ detail: searchQuery }, 'Could not resolve Spotify track');
       return null;
     }
   });
   const tracks = resolved.filter((x): x is Track => x !== null);
   if (entries.length > 3) {
     const sec = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(
-      `[music] Spotify→YouTube: done ${tracks.length}/${entries.length} in ${sec}s (raise MUSIC_PLAYLIST_SEARCH_CONCURRENCY up to 24 if stable).`,
-    );
+    log.info(`Spotify→YouTube: done ${tracks.length}/${entries.length} in ${sec}s (raise MUSIC_PLAYLIST_SEARCH_CONCURRENCY up to 24 if stable).`);
   }
   return tracks;
 }
 
 async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelId: string): Promise<PlaylistResolution | null> {
-  const token = await getSpotifyToken();
-  if (!token) return null;
-
   const playlistId = spotifyPlaylistIdFromUrl(url);
   if (!playlistId) return null;
+  const token = await getSpotifyToken().catch(() => null);
+  if (!token) return resolveSpotifyListViaEmbed('playlist', playlistId, requestedBy, channelId);
 
   const market = spotifyDefaultMarket();
   const headers = { Authorization: `Bearer ${token}` };
@@ -425,10 +462,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
   );
   if (!metaRes.ok) {
     const body = await metaRes.text().catch(() => '');
-    console.warn(
-      `[music] Spotify playlist meta failed: ${metaRes.status} ${metaRes.statusText}`,
-      body.slice(0, 400),
-    );
+    log.warn({ detail: body.slice(0, 400) }, `Spotify playlist meta failed: ${metaRes.status} ${metaRes.statusText}`);
     if (metaRes.status === 403) {
       const fromEmbed = await tryResolveSpotifyPlaylistFrom403Embed(
         playlistId,
@@ -439,9 +473,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
       if (fromEmbed) return fromEmbed;
     }
     if (metaRes.status === 403 || metaRes.status === 404) {
-      console.warn(
-        '[music] Tip: https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api — editorial playlists often need embed fallback or user OAuth.',
-      );
+      log.warn('Tip: https://developer.spotify.com/blog/2024-11-27-changes-to-the-web-api — editorial playlists often need embed fallback or user OAuth.');
     }
     return null;
   }
@@ -466,7 +498,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
       ) {
         triedTracksWithoutMarket = true;
         nextUrl = `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}/tracks?limit=100`;
-        console.warn('[music] Spotify playlist tracks 403 with market=; retrying without market parameter.');
+        log.warn('Spotify playlist tracks 403 with market=; retrying without market parameter.');
         continue;
       }
       if (res.status === 403 && items.length === 0) {
@@ -478,10 +510,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
         );
         if (fromEmbed) return fromEmbed;
       }
-      console.warn(
-        `[music] Spotify playlist tracks page failed: ${res.status} ${res.statusText}`,
-        body.slice(0, 400),
-      );
+      log.warn({ detail: body.slice(0, 400) }, `Spotify playlist tracks page failed: ${res.status} ${res.statusText}`);
       return null;
     }
     const page = (await res.json()) as {
@@ -490,7 +519,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
       error?: { message?: string; status?: number };
     };
     if (page.error) {
-      console.warn('[music] Spotify playlist tracks API error', page.error);
+      log.warn({ detail: page.error }, 'Spotify playlist tracks API error');
       return null;
     }
     const batch = Array.isArray(page.items) ? page.items : [];
@@ -509,9 +538,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
     )
     .slice(0, PLAYLIST_MAX_TRACKS);
   if (!withTrack.length) {
-    console.warn(
-      `[music] Spotify playlist "${playlistName}" returned no playable track rows (market=${market}). Try SPOTIFY_DEFAULT_MARKET=SE or a public playlist.`,
-    );
+    log.warn(`Spotify playlist "${playlistName}" returned no playable track rows (market=${market}). Try SPOTIFY_DEFAULT_MARKET=SE or a public playlist.`);
     return null;
   }
 
@@ -526,9 +553,7 @@ async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelI
   const tracks = await spotifyTrackNamesToYoutubeTracks(entries, requestedBy, channelId);
 
   if (!tracks.length) {
-    console.warn(
-      `[music] Spotify playlist "${playlistName}" had ${withTrack.length} rows but none resolved to YouTube (search/play-dl).`,
-    );
+    log.warn(`Spotify playlist "${playlistName}" had ${withTrack.length} rows but none resolved to YouTube (search/play-dl).`);
     return null;
   }
 
@@ -540,6 +565,10 @@ async function resolvePlaylist(query: string, requestedBy: string, channelId: st
     // Spotify playlist (including open.spotify.com/intl-xx/playlist/…)
     if (/spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\//i.test(query)) {
       return await resolveSpotifyPlaylist(query, requestedBy, channelId);
+    }
+    const spotifyLink = parseSpotifyUrl(query);
+    if (spotifyLink?.kind === 'album') {
+      return await resolveSpotifyListViaEmbed('album', spotifyLink.id, requestedBy, channelId);
     }
 
     // YouTube playlist
@@ -602,28 +631,32 @@ async function resolvePlaylist(query: string, requestedBy: string, channelId: st
 
     return null;
   } catch (err) {
-    console.error('[music] resolvePlaylist error', err);
+    log.error({ err }, 'resolvePlaylist error');
     return null;
   }
 }
 
-async function resolveSpotifyTrack(url: string): Promise<{ title: string; artist: string } | null> {
-  const token = await getSpotifyToken();
-  if (!token) return null;
+/** Song + artist for a Spotify track link: Web API when keys are set, otherwise the public track page. */
+async function resolveSpotifyTrack(url: string): Promise<{ title: string; artist: string | null; durationSec: number | null } | null> {
+  const link = parseSpotifyUrl(url);
+  if (link?.kind !== 'track') return null;
 
-  const match = url.match(/spotify\.com\/(?:intl-[a-z]{2}\/)?track\/([A-Za-z0-9]+)/i);
-  if (!match) return null;
-
-  const res = await fetch(`https://api.spotify.com/v1/tracks/${encodeURIComponent(match[1])}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) return null;
-
-  const data = (await res.json()) as {
-    name: string;
-    artists: { name: string }[];
-  };
-  return { title: data.name, artist: data.artists[0]?.name ?? '' };
+  const token = await getSpotifyToken().catch(() => null);
+  if (token) {
+    const res = await fetch(`https://api.spotify.com/v1/tracks/${encodeURIComponent(link.id)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { name: string; artists: { name: string }[]; duration_ms?: number };
+      return {
+        title: data.name,
+        artist: data.artists[0]?.name ?? null,
+        durationSec: data.duration_ms ? Math.round(data.duration_ms / 1000) : null,
+      };
+    }
+    log.warn(`Spotify track API ${res.status}; falling back to the public track page`);
+  }
+  return fetchSpotifyTrackPublic(link.id);
 }
 
 export async function initPlayDl(): Promise<void> {
@@ -632,28 +665,31 @@ export async function initPlayDl(): Promise<void> {
   if (clientId && clientSecret) {
     try {
       await getSpotifyToken();
-      console.log('[music] Spotify credentials loaded.');
+      log.info('Spotify credentials loaded.');
     } catch (err) {
-      console.warn('[music] Spotify credentials failed:', (err as Error).message);
+      log.warn({ detail: (err as Error).message }, 'Spotify credentials failed');
     }
   } else {
-    console.warn('[music] No Spotify credentials — Spotify URLs will not work.');
+    log.info('No Spotify credentials: Spotify links are read from public pages (tracks, albums, playlists).');
   }
 }
 
 async function resolveTrack(query: string, requestedBy: string, channelId: string): Promise<Track | null> {
   try {
-    // Spotify URL — resolve via Spotify API then search YouTube
-    if (query.includes('spotify.com/track/')) {
+    // Spotify track (also /intl-xx/ links) — song + artist from Spotify, then search YouTube.
+    // Artist, podcast and episode links are not playable.
+    const spotifyLink = parseSpotifyUrl(query);
+    if (spotifyLink && spotifyLink.kind !== 'track') return null;
+    if (spotifyLink) {
       const sp = await resolveSpotifyTrack(query);
       if (!sp) return null;
-      const searchQuery = `${sp.title} ${sp.artist}`.trim();
-      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 1 });
-      if (!results.length) return null;
-      const yt = results[0];
+      const searchQuery = youtubeQueryFor(sp);
+      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 5 });
+      const yt = pickYoutubeMatch(results, sp);
+      if (!yt) return null;
       const watchUrl = youtubeWatchUrlFromSearchResult(yt);
       if (!watchUrl) {
-        console.warn('[music] YouTube search matched a video but had no url/id:', searchQuery);
+        log.warn({ detail: searchQuery }, 'YouTube search matched a video but had no url/id');
         return null;
       }
       return {
@@ -661,7 +697,7 @@ async function resolveTrack(query: string, requestedBy: string, channelId: strin
         title: sp.title,
         artist: sp.artist || null,
         thumbnail: yt.thumbnails?.[0]?.url ?? null,
-        durationSec: yt.durationInSec ?? null,
+        durationSec: yt.durationInSec ?? sp.durationSec ?? null,
         source: 'spotify',
         requestedBy,
         channelId,
@@ -709,7 +745,7 @@ async function resolveTrack(query: string, requestedBy: string, channelId: strin
     const yt = results[0];
     const watchUrl = youtubeWatchUrlFromSearchResult(yt);
     if (!watchUrl) {
-      console.warn('[music] YouTube search matched a video but had no url/id:', query);
+      log.warn({ detail: query }, 'YouTube search matched a video but had no url/id');
       return null;
     }
     return {
@@ -723,7 +759,7 @@ async function resolveTrack(query: string, requestedBy: string, channelId: strin
       channelId,
     };
   } catch (err) {
-    console.error('[music] resolveTrack error', err);
+    log.error({ err }, 'resolveTrack error');
     return null;
   }
 }
@@ -750,10 +786,12 @@ async function saveNowPlaying(guildId: string, track: Track): Promise<void> {
      track.durationSec, track.source, track.requestedBy, track.channelId],
   );
   void recordMusicPlaybackLog({ guildId, event: 'play_start', track });
+  notifyChange(guildId, 'track');
 }
 
 async function clearNowPlaying(guildId: string): Promise<void> {
   await getPool().query('DELETE FROM bot.music_now_playing WHERE guild_id = $1', [guildId]);
+  notifyChange(guildId, 'state');
 }
 
 async function popNextFromQueue(guildId: string): Promise<Track | null> {
@@ -793,6 +831,7 @@ async function addToQueue(guildId: string, track: Track): Promise<void> {
      track.durationSec, track.source, track.requestedBy],
   );
   void recordMusicPlaybackLog({ guildId, event: 'queued', track });
+  notifyChange(guildId, 'queue');
 }
 
 /** Insert at front of queue (earlier `added_at` than existing rows). */
@@ -814,10 +853,12 @@ async function addToQueueFront(guildId: string, track: Track): Promise<void> {
     track,
     meta: { queue_position: 'front' },
   });
+  notifyChange(guildId, 'queue');
 }
 
 async function clearQueue(guildId: string): Promise<void> {
   await getPool().query('DELETE FROM bot.music_queue WHERE guild_id = $1', [guildId]);
+  notifyChange(guildId, 'queue');
 }
 
 /** Randomize queue order by reassigning `added_at` (earliest plays first). */
@@ -835,6 +876,7 @@ export async function shuffleQueue(guildId: string): Promise<number> {
      WHERE q.id = s.id AND q.guild_id = $1`,
     [gid],
   );
+  notifyChange(gid, 'queue');
   return res.rowCount ?? 0;
 }
 
@@ -878,6 +920,7 @@ export async function reorderMusicQueue(guildId: string, orderedIds: number[]): 
   } finally {
     client.release();
   }
+  notifyChange(gid, 'queue');
   return true;
 }
 
@@ -885,6 +928,12 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
   const gid = voiceSnowflake(guildId);
   const tr: Track = { ...track, channelId: voiceSnowflake(track.channelId) };
   let gp = players.get(gid);
+
+  if (gp && !isConnectionUsable(gp.connection)) {
+    log.warn(`Recreating unusable voice connection (${gp.connection.state.status})`);
+    destroyGuildPlayer(gid, gp);
+    gp = undefined;
+  }
 
   // Ensure we have a voice connection
   if (!gp || gp.connection.state.status === VoiceConnectionStatus.Destroyed) {
@@ -910,7 +959,7 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
     // Destroy any stale connection @discordjs/voice may still have registered.
     const stale = getVoiceConnection(gid);
     if (stale) {
-      console.log(`[music] Destroying stale voice connection (${stale.state.status})`);
+      log.info(`Destroying stale voice connection (${stale.state.status})`);
       stale.destroy();
     }
 
@@ -922,18 +971,28 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
       adapterCreator: guild.voiceAdapterCreator as any,
     });
 
-    console.log(`[music] Voice connection created, initial state: ${connection.state.status}`);
+    log.info(`Voice connection created, initial state: ${connection.state.status}`);
 
     connection.on('error', (err) => {
-      console.error(`[music] Voice connection error in ${gid}:`, err.message);
+      log.error({ detail: err.message }, `Voice connection error in ${gid}`);
     });
 
     connection.on('stateChange', (oldState, newState) => {
-      console.log(`[music] Voice state: ${oldState.status} → ${newState.status}`);
+      if (newState.status === VoiceConnectionStatus.Disconnected) {
+        setTimeout(() => {
+          const current = players.get(gid);
+          if (current?.connection !== connection) return;
+          if (connection.state.status !== VoiceConnectionStatus.Disconnected) return;
+          log.warn('Voice connection stayed disconnected; tearing down stale player');
+          destroyGuildPlayer(gid, current);
+          void clearNowPlaying(gid);
+        }, 5_000);
+      }
+      log.debug(`Voice state: ${oldState.status} → ${newState.status}`);
     });
 
     connection.on('debug', (msg) => {
-      console.log(`[music] Voice debug: ${msg}`);
+      log.debug(`Voice debug: ${msg}`);
     });
 
     try {
@@ -1001,7 +1060,7 @@ async function playTrack(client: Client, guildId: string, track: Track): Promise
     });
 
     player.on('error', (err) => {
-      console.error(`[music] Player error in ${gid}:`, err);
+      log.error({ err }, `Player error in ${gid}`);
     });
 
     gp = {
@@ -1050,6 +1109,7 @@ async function startStream(player: AudioPlayer, track: Track, guildId: string, s
       '--format', 'bestaudio/best',
       '--output', '-',
       '--quiet', '--no-warnings', '--no-playlist', '--no-check-certificates',
+      ...ytdlpExtraArgs(),
     ];
     /* Seek: `--downloader ffmpeg` + `ffmpeg_i:-ss` is ignored for YouTube's progressive HTTP
        (yt-dlp uses the native HTTP downloader). Partial download via sections requires ffmpeg. */
@@ -1059,9 +1119,7 @@ async function startStream(player: AudioPlayer, track: Track, guildId: string, s
         ? ['--download-sections', ytdlpDownloadSectionFromStartSec(startSec), ...ffmpegLocArgs]
         : [];
     if (startSec > 0 && !ffmpegLocArgs.length) {
-      console.warn(
-        '[music] Seek: no ffmpeg binary (ffmpeg-static or FFMPEG_PATH). yt-dlp may fail partial download; install ffmpeg or set FFMPEG_PATH.',
-      );
+      log.warn('Seek: no ffmpeg binary (ffmpeg-static or FFMPEG_PATH). yt-dlp may fail partial download; install ffmpeg or set FFMPEG_PATH.');
     }
     const proc = spawn(ytdlpBin, [...baseArgs, ...seekArgs], { stdio: ['ignore', 'pipe', 'pipe'] });
 
@@ -1070,15 +1128,15 @@ async function startStream(player: AudioPlayer, track: Track, guildId: string, s
     proc.stderr?.on('data', (chunk: Buffer) => {
       const line = chunk.toString().trim();
       if (line && !isBenignYtdlpShutdownMessage(line)) {
-        console.warn('[music] yt-dlp:', line.slice(0, 400));
+        log.warn({ detail: line.slice(0, 400) }, 'yt-dlp');
       }
     });
-    proc.once('error', (err: Error) => console.error('[music] yt-dlp process error:', err.message));
+    proc.once('error', (err: Error) => log.error({ detail: err.message }, 'yt-dlp process error'));
     proc.once('close', (code: number | null) => {
       if (gp.ytdlpProc === proc) gp.ytdlpProc = null;
       const killed = proc.killed;
       if (code !== 0 && code !== null && !killed) {
-        console.warn(`[music] yt-dlp exited with code ${code}`);
+        log.warn(`yt-dlp exited with code ${code}`);
       }
     });
 
@@ -1093,7 +1151,7 @@ export type EnqueueResult =
   | { kind: 'playlist'; title: string; queued: number; first: Track };
 
 function isPlaylistUrl(query: string): boolean {
-  if (/spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\//i.test(query)) return true;
+  if (/spotify\.com\/(?:intl-[a-z]{2}\/)?(?:playlist|album)\//i.test(query)) return true;
   if (query.includes('list=') && (query.includes('youtube.com') || query.includes('youtu.be'))) return true;
   if (query.includes('soundcloud.com') && query.includes('/sets/')) return true;
   return false;
@@ -1113,13 +1171,8 @@ export async function enqueue(
     const pl = await resolvePlaylist(query, requestedBy, cid);
     if (!pl || !pl.tracks.length) return null;
 
-    const gp = players.get(gid);
-    const isPlaying = gp &&
-      gp.player.state.status !== AudioPlayerStatus.Idle &&
-      gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
     const [first, ...rest] = pl.tracks;
-    if (isPlaying) {
+    if (isActivelyPlaying(players.get(gid))) {
       for (const t of pl.tracks) await addToQueue(gid, t);
     } else {
       await playTrack(client, gid, first!);
@@ -1131,17 +1184,30 @@ export async function enqueue(
   const track = await resolveTrack(query, requestedBy, cid);
   if (!track) return null;
 
-  const gp = players.get(gid);
-  const isPlaying = gp &&
-    gp.player.state.status !== AudioPlayerStatus.Idle &&
-    gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
-  if (isPlaying) {
+  if (isActivelyPlaying(players.get(gid))) {
     await addToQueue(gid, track);
   } else {
     await playTrack(client, gid, track);
   }
   return { kind: 'track', track };
+}
+
+/**
+ * Start the queue in `channelId` when nothing is playing, e.g. after a restart left tracks behind.
+ * Returns the track that started, or null when the queue is empty or something already plays.
+ */
+export async function playFromQueue(client: Client, guildId: string, channelId: string): Promise<Track | null> {
+  const gid = voiceSnowflake(guildId);
+  if (isActivelyPlaying(players.get(gid))) return null;
+  const next = await popNextFromQueue(gid);
+  if (!next) return null;
+  try {
+    await playTrack(client, gid, { ...next, channelId: voiceSnowflake(channelId) });
+  } catch (err) {
+    await addToQueueFront(gid, next);
+    throw err;
+  }
+  return next;
 }
 
 export async function skip(guildId: string): Promise<void> {
@@ -1190,6 +1256,7 @@ export async function pause(guildId: string): Promise<void> {
     event: 'pause',
     track: gp.currentTrack,
   });
+  notifyChange(gid, 'state');
 }
 
 export async function resume(guildId: string): Promise<void> {
@@ -1198,7 +1265,11 @@ export async function resume(guildId: string): Promise<void> {
   if (!gp) return;
   gp.player.unpause();
   await getPool().query(
-    'UPDATE bot.music_now_playing SET is_paused = false WHERE guild_id = $1',
+    `UPDATE bot.music_now_playing
+     SET
+       started_at = now() - greatest(extract(epoch from (updated_at - started_at)), 0) * interval '1 second',
+       is_paused = false
+     WHERE guild_id = $1`,
     [gid],
   );
   void recordMusicPlaybackLog({
@@ -1206,6 +1277,12 @@ export async function resume(guildId: string): Promise<void> {
     event: 'resume',
     track: gp.currentTrack,
   });
+  notifyChange(gid, 'state');
+}
+
+/** True while a guild's player is paused (the panel's play/pause button uses this). */
+export function isPaused(guildId: string): boolean {
+  return players.get(voiceSnowflake(guildId))?.player.state.status === AudioPlayerStatus.Paused;
 }
 
 export async function seek(guildId: string, seekSec: number): Promise<void> {
@@ -1232,6 +1309,7 @@ export async function seek(guildId: string, seekSec: number): Promise<void> {
     track,
     meta: { position_sec: clamped },
   });
+  notifyChange(gid, 'state');
 }
 
 export async function stop(guildId: string): Promise<void> {
@@ -1256,6 +1334,33 @@ export async function stop(guildId: string): Promise<void> {
   if (gp) {
     killActiveYtdlp(gid);
     gp.player.stop(true);
+  }
+}
+
+/**
+ * Graceful shutdown: stop every stream and leave voice. The queue stays in the DB; the track that was
+ * playing goes back to the front of the queue so a restart does not lose it.
+ */
+export async function shutdownMusic(): Promise<void> {
+  for (const [gid, gp] of players) {
+    try {
+      if (gp.currentTrack) {
+        await addToQueueFront(gid, gp.currentTrack);
+      }
+      await clearNowPlaying(gid);
+    } catch (err) {
+      log.warn({ err, guildId: gid }, 'could not persist current track on shutdown');
+    }
+    gp.suppressNextIdleQueueAdvance = true;
+    killActiveYtdlp(gid);
+    gp.player.stop(true);
+    if (gp.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      gp.connection.destroy();
+    }
+  }
+  players.clear();
+  for (const connection of getVoiceConnections().values()) {
+    if (connection.state.status !== VoiceConnectionStatus.Destroyed) connection.destroy();
   }
 }
 
@@ -1406,12 +1511,7 @@ export async function playPlaylist(
     durationSec: r.duration_sec, source: r.source, requestedBy: userId, channelId: cid,
   }));
 
-  const gp = players.get(gid);
-  const isPlaying = gp &&
-    gp.player.state.status !== AudioPlayerStatus.Idle &&
-    gp.connection.state.status !== VoiceConnectionStatus.Destroyed;
-
-  if (isPlaying) {
+  if (isActivelyPlaying(players.get(gid))) {
     for (const t of tracks) await addToQueue(gid, t);
   } else {
     const [first, ...rest] = tracks;

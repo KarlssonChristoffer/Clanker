@@ -21,6 +21,9 @@ import {
   type Role,
 } from 'discord.js';
 import { getPool } from './db.js';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('guild-tracker');
 
 type DB = { query: (sql: string, params?: unknown[]) => Promise<unknown> };
 
@@ -219,7 +222,7 @@ async function snapshotGuild(db: DB, guild: Guild): Promise<void> {
   try {
     await guild.members.fetch();
   } catch (err) {
-    console.warn(`[guild-tracker] members.fetch failed for ${gid}: ${(err as Error).message}`);
+    log.warn(`members.fetch failed for ${gid}: ${(err as Error).message}`);
   }
   await db.query('DELETE FROM bot.guild_members WHERE guild_id=$1', [gid]);
   for (const member of guild.members.cache.values()) {
@@ -259,10 +262,10 @@ export async function snapshotAllGuilds(client: Client<true>): Promise<void> {
     await snapshotActivitySessions(db as unknown as DB, client);
     await db.query('COMMIT');
     const memberCount = client.guilds.cache.reduce((n, g) => n + g.memberCount, 0);
-    console.log(`[guild-tracker] snapshot complete — ${client.guilds.cache.size} guild(s), ~${memberCount} members`);
+    log.info(`snapshot complete — ${client.guilds.cache.size} guild(s), ~${memberCount} members`);
   } catch (err) {
     await db.query('ROLLBACK');
-    console.error('[guild-tracker] snapshot failed:', err);
+    log.error({ err }, 'snapshot failed');
   } finally {
     db.release();
   }
@@ -280,7 +283,7 @@ export function registerGuildTracker(client: Client): void {
 
   client.on(Events.GuildMemberAdd, async (member) => {
     try { await upsertMember(getPool() as unknown as DB, member); }
-    catch (err) { console.error('[guild-tracker] GuildMemberAdd error:', err); }
+    catch (err) { log.error({ err }, 'GuildMemberAdd error'); }
   });
 
   client.on(Events.GuildMemberRemove, async (member) => {
@@ -289,12 +292,12 @@ export function registerGuildTracker(client: Client): void {
         'DELETE FROM bot.guild_members WHERE guild_id=$1 AND user_id=$2',
         [member.guild.id, member.user.id],
       );
-    } catch (err) { console.error('[guild-tracker] GuildMemberRemove error:', err); }
+    } catch (err) { log.error({ err }, 'GuildMemberRemove error'); }
   });
 
   client.on(Events.GuildMemberUpdate, async (_old, member) => {
     try { await upsertMember(getPool() as unknown as DB, member); }
-    catch (err) { console.error('[guild-tracker] GuildMemberUpdate error:', err); }
+    catch (err) { log.error({ err }, 'GuildMemberUpdate error'); }
   });
 
   // ── Presences ──
@@ -319,7 +322,7 @@ export function registerGuildTracker(client: Client): void {
         ? []
         : newPresence.activities.map(a => ({ type: a.type, name: a.name }));
       await syncActivitySessions(db, guildId, userId, username, oldActs, newActs);
-    } catch (err) { console.error('[guild-tracker] PresenceUpdate error:', err); }
+    } catch (err) { log.error({ err }, 'PresenceUpdate error'); }
   });
 
   // ── Channels ──
@@ -327,13 +330,13 @@ export function registerGuildTracker(client: Client): void {
   client.on(Events.ChannelCreate, async (ch) => {
     if (!('guild' in ch) || !ch.guild) return;
     try { await upsertChannel(getPool() as unknown as DB, ch.guild.id, ch as GuildChannel); }
-    catch (err) { console.error('[guild-tracker] ChannelCreate error:', err); }
+    catch (err) { log.error({ err }, 'ChannelCreate error'); }
   });
 
   client.on(Events.ChannelUpdate, async (_old, ch) => {
     if (!('guild' in ch) || !ch.guild) return;
     try { await upsertChannel(getPool() as unknown as DB, ch.guild.id, ch as GuildChannel); }
-    catch (err) { console.error('[guild-tracker] ChannelUpdate error:', err); }
+    catch (err) { log.error({ err }, 'ChannelUpdate error'); }
   });
 
   client.on(Events.ChannelDelete, async (ch) => {
@@ -343,19 +346,19 @@ export function registerGuildTracker(client: Client): void {
         'DELETE FROM bot.guild_channels WHERE guild_id=$1 AND channel_id=$2',
         [ch.guild.id, ch.id],
       );
-    } catch (err) { console.error('[guild-tracker] ChannelDelete error:', err); }
+    } catch (err) { log.error({ err }, 'ChannelDelete error'); }
   });
 
   // ── Roles ──
 
   client.on(Events.GuildRoleCreate, async (role) => {
     try { await upsertRole(getPool() as unknown as DB, role.guild.id, role); }
-    catch (err) { console.error('[guild-tracker] GuildRoleCreate error:', err); }
+    catch (err) { log.error({ err }, 'GuildRoleCreate error'); }
   });
 
   client.on(Events.GuildRoleUpdate, async (_old, role) => {
     try { await upsertRole(getPool() as unknown as DB, role.guild.id, role); }
-    catch (err) { console.error('[guild-tracker] GuildRoleUpdate error:', err); }
+    catch (err) { log.error({ err }, 'GuildRoleUpdate error'); }
   });
 
   client.on(Events.GuildRoleDelete, async (role) => {
@@ -364,6 +367,6 @@ export function registerGuildTracker(client: Client): void {
         'DELETE FROM bot.guild_roles WHERE guild_id=$1 AND role_id=$2',
         [role.guild.id, role.id],
       );
-    } catch (err) { console.error('[guild-tracker] GuildRoleDelete error:', err); }
+    } catch (err) { log.error({ err }, 'GuildRoleDelete error'); }
   });
 }

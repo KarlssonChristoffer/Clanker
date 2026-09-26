@@ -27,7 +27,7 @@ async function main() {
   process.chdir(root);
 
   console.log('clanker-bot-dev: stoppar Docker-bot om den körs (port/token)...');
-  tryRun('docker compose --profile discord stop discord-bot');
+  tryRun('docker compose --profile discord-bridge stop discord-bot');
   tryRun('docker compose --profile discord-host stop discord-bot-host');
 
   console.log('clanker-bot-dev: startar clanker-db...');

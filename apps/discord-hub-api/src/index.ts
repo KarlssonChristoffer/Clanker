@@ -21,10 +21,8 @@ import {
   setOAuthCookiesAfterLogin,
 } from "./discord-proxy.js";
 import { DISCORD_OAUTH_TOKENS_COOKIE } from "./discord-tokens.js";
-import {
-  getGatewayRuntime,
-  startDiscordGateway,
-} from "./discord-gateway.js";
+import { getBotGuildLive, getBotLiveHealth } from "./bot-live.js";
+import { registerQuoteRoutes } from "./quotes.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
 import { getPublicProfile, upsertProfileFromSession } from "./profile-store.js";
@@ -1158,6 +1156,8 @@ function createApp(env: AppEnv) {
     return c.json(r.summary);
   });
 
+  registerQuoteRoutes(app, env);
+
   app.get("/api/bot/live/health", async (c) => {
     const token = getCookie(c, COOKIE_NAME);
     if (!token) {
@@ -1167,21 +1167,7 @@ function createApp(env: AppEnv) {
     if (!session) {
       return c.json({ error: "Unauthorized" }, 401);
     }
-    const rt = getGatewayRuntime();
-    if (!rt) {
-      return c.json({
-        gateway_connected: false,
-        last_heartbeat_ack_at: null,
-        last_dispatch_at: null,
-        guilds_subscribed: env.discordGatewayGuildIds,
-        reconnect_attempt: 0,
-        intents: env.discordGatewayIntents,
-        degraded: true,
-        degraded_reason:
-          "Gateway not running — set DISCORD_BOT_TOKEN and non-empty DISCORD_GATEWAY_GUILD_IDS",
-      });
-    }
-    return c.json(rt.getHealth());
+    return c.json(await getBotLiveHealth(getPool()));
   });
 
   app.get("/api/bot/live/guild/:id", async (c) => {
@@ -1201,19 +1187,7 @@ function createApp(env: AppEnv) {
     if (!access.ok) {
       return c.json(access.body, access.status);
     }
-    const rt = getGatewayRuntime();
-    if (!rt) {
-      return c.json({
-        guild_id: guildId,
-        gateway_connected: false,
-        gateway_degraded: true,
-        gateway_degraded_reason:
-          "Gateway not running — set DISCORD_BOT_TOKEN and DISCORD_GATEWAY_GUILD_IDS",
-        last_event_at: null,
-        voice_users: [],
-      });
-    }
-    return c.json(rt.getGuildLive(guildId));
+    return c.json(await getBotGuildLive(getPool(), guildId));
   });
 
   app.get("/api/bot/guild/:id/voice-states", async (c) => {
@@ -1369,6 +1343,15 @@ function createApp(env: AppEnv) {
     return (env.musicBotHttpUrl ?? "").trim().replace(/\/$/, "");
   }
 
+  /** fetch() against the bot's HTTP server with the shared-secret header and a timeout. */
+  function botFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers);
+    if (env.botHttpSecret) {
+      headers.set("X-Clanker-Secret", env.botHttpSecret);
+    }
+    return fetch(url, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(15_000) });
+  }
+
   async function requireMusicBotUrl(c: Context): Promise<string | null> {
     if (!env.musicBotHttpUrl) {
       c.json({ error: "Music bot not configured" }, 503);
@@ -1392,7 +1375,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(
+        const res = await botFetch(
           `${botBase}/music/state?guildId=${encodeURIComponent(guildId)}`,
         );
         const json = (await res.json()) as Record<string, unknown>;
@@ -1437,7 +1420,7 @@ function createApp(env: AppEnv) {
     body: Record<string, unknown>,
   ) {
     try {
-      const res = await fetch(`${botUrl}${path}`, {
+      const res = await botFetch(`${botUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1691,7 +1674,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(
+        const res = await botFetch(
           `${botBase}/music/queue/${itemId}?guildId=${encodeURIComponent(guildId)}`,
           { method: "DELETE" },
         );
@@ -1747,7 +1730,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(`${botBase}/music/queue/reorder`, {
+        const res = await botFetch(`${botBase}/music/queue/reorder`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ guildId, orderedIds }),
@@ -1792,15 +1775,10 @@ loadDotenv({
   override: true,
 });
 
-function shutdownGateway(): void {
-  getGatewayRuntime()?.stop();
-}
-
 let stopWheelCollabServer: (() => Promise<void>) | null = null;
 let httpServer: ServerType | null = null;
 
 async function shutdownAndExit(code: number): Promise<void> {
-  shutdownGateway();
   if (httpServer) {
     await new Promise<void>((resolve) => {
       httpServer!.close(() => resolve());
@@ -1841,7 +1819,6 @@ async function main(): Promise<void> {
   }
 
   const app = createApp(env);
-  startDiscordGateway(env);
   stopWheelCollabServer = startWheelCollabServer(env);
   if (env.riotApiKey && env.leagueAutoSyncEnabled) {
     startLeagueSyncScheduler(env.riotApiKey);

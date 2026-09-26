@@ -15,7 +15,6 @@ import {
   Settings2,
 } from "lucide-react";
 import { Link, NavLink, Outlet, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { useReducedMotion } from "framer-motion";
 import { Button } from "@clanker/ui/components/button";
 import {
   Avatar,
@@ -215,7 +214,6 @@ export default function HubLayout() {
   const toasts = useHubToasts();
   const { colorPalette, setColorPalette } = useTheme();
   const { enabled: audioEnabled, toggleEnabled: toggleAudio, play } = useHubAudio();
-  const reducedMotion = useReducedMotion() ?? false;
   const [me, setMe] = useState<HubSessionState>({ status: "loading" });
   const [commandOpen, setCommandOpen] = useState(false);
   const [desktopShellState, setDesktopShellState] = useState<HubDesktopShellState | null>(null);
@@ -224,7 +222,7 @@ export default function HubLayout() {
   const [gridVisible, setGridVisible] = useState(readGridVisible);
   const [nativeBrowserContextMenu, setNativeBrowserContextMenu] = useState(readNativeBrowserContextMenu);
   const [prefsPanelOpen, setPrefsPanelOpen] = useState(false);
-  const { prefs: hubPrefs, patchPrefs } = useHubPrefs();
+  const { prefs: hubPrefs } = useHubPrefs();
   useHubSettingsSync(me, hubPrefs);
   const [shellContextMenu, setShellContextMenu] = useState<{
     target: HubContextTarget;

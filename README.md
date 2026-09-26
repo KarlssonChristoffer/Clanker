@@ -10,6 +10,7 @@ Homeserver-repo fÃ¶r Raspberry Pi (Clanker) â€” skript, anteckningar och 
 | ------ | -------- |
 | `apps/discord-hub-web/` | Frontend fÃ¶r **discord-hubben** (Vite + React + TS, Tailwind + shadcn + Motion) â€” se `apps/discord-hub-web/README.md` |
 | `apps/discord-hub-api/` | Backend fÃ¶r samma hub â€” se `apps/discord-hub-api/README.md` |
+| `bots/discord-bot/` | **Clanker-boten** (Discord: musik, Jev, WoW, setup, citat) — se `bots/discord-bot/README.md`. Drift på tincan: `scripts/migrate-to-tincan.md`, testlista: `TESTPLAN.md` |
 | `docs/discord-hub.md` | Samlad **discord-hub**-översikt (arkitektur, dev, portar, env) |
 | `apps/dev-tools-web/` | **Lokala dev-verktyg** (dokumentationsviewer m.m., separat frÃ¥n discord-hub; samma UI-grund som discord-hub) â€” **start:** se [apps/dev-tools-web/README.md](apps/dev-tools-web/README.md) (`npm run dev:tools`, eller `npm run dev:all` tillsammans med discord-hub; Docker-profil `devtools`) |
 | `packages/ui/` | Delat **`@clanker/ui`** â€” shadcn/ui-primitives som bÃ¥da webapparna importerar |

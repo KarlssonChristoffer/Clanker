@@ -1,3 +1,9 @@
+/**
+ * The bot's HTTP server (hub-api → bot): music control + `GET /health`.
+ * Every route except /health requires `X-Clanker-Secret` = BOT_HTTP_SECRET (timing-safe compare).
+ * Without a secret the server only accepts requests when bound to loopback (dev convenience).
+ */
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { serve } from '@hono/node-server';
 import { type Client } from 'discord.js';
@@ -7,6 +13,11 @@ import {
   reorderMusicQueue,
   addTrackToPlaylist, playPlaylist,
 } from './music-player.js';
+import { getHealth } from './core/health.js';
+import { isLoopbackBind } from './core/config.js';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('bot-http');
 
 const GUILD_SNOWFLAKE_RE = /^\d{5,32}$/;
 
@@ -19,8 +30,57 @@ type GuildBody = { guildId: string };
 type PlaylistAddBody = { guildId: string; playlistName: string; query: string; userId: string };
 type PlaylistPlayBody = { guildId: string; channelId: string; userId: string; playlistName: string };
 
-export function startMusicHttpServer(client: Client, port: number): void {
+/** Constant-time comparison that does not leak the secret's length (both sides hashed first). */
+export function secretMatches(provided: string | undefined, expected: string): boolean {
+  if (!provided) return false;
+  const a = createHash('sha256').update(provided, 'utf8').digest();
+  const b = createHash('sha256').update(expected, 'utf8').digest();
+  return timingSafeEqual(a, b);
+}
+
+export type BotHttpOptions = {
+  client: Client;
+  port: number;
+  bind: string;
+  secret: string | undefined;
+  version: string;
+};
+
+export type BotHttpServer = { close: () => Promise<void> };
+
+/** Builds the Hono app (no listening socket) — used by the server and by tests via `app.request()`. */
+export function createBotHttpApp(opts: Omit<BotHttpOptions, 'port'>): Hono {
+  const { client, bind, secret, version } = opts;
   const app = new Hono();
+
+  app.get('/health', async (c) => {
+    const { status, body } = await getHealth(client, version);
+    return c.json(body, status);
+  });
+
+  if (!secret && !isLoopbackBind(bind)) {
+    log.error({ bind }, 'BOT_HTTP_SECRET is not set while bound to a non-loopback address; music routes will answer 503');
+  } else if (!secret) {
+    log.warn('BOT_HTTP_SECRET is not set; music routes are open to local processes only (loopback bind)');
+  }
+
+  app.use('*', async (c, next) => {
+    if (c.req.path === '/health') return next();
+    if (!secret) {
+      if (isLoopbackBind(bind)) return next();
+      return c.json({ error: 'Bot HTTP secret not configured' }, 503);
+    }
+    if (!secretMatches(c.req.header('x-clanker-secret'), secret)) {
+      log.warn({ path: c.req.path, method: c.req.method }, 'rejected request with missing/invalid X-Clanker-Secret');
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    return next();
+  });
+
+  app.onError((err, c) => {
+    log.error({ err, path: c.req.path, method: c.req.method }, 'bot HTTP handler failed');
+    return c.json({ error: 'Internal error' }, 500);
+  });
 
   app.post('/play', async (c) => {
     const body = await c.req.json<PlayBody>();
@@ -162,7 +222,7 @@ export function startMusicHttpServer(client: Client, port: number): void {
       if (!ok) return c.json({ error: 'Queue mismatch — refresh and try again' }, 409);
       return c.json({ ok: true });
     } catch (err) {
-      console.error('[music-http] queue reorder:', (err as Error).message);
+      log.error({ err, guildId }, 'queue reorder failed');
       return c.json({ error: 'Reorder failed' }, 500);
     }
   });
@@ -186,27 +246,38 @@ export function startMusicHttpServer(client: Client, port: number): void {
     return c.json({ ok: true });
   });
 
-  const bind =
-    process.env.MUSIC_BOT_HTTP_BIND?.trim() === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1';
+  return app;
+}
 
+export function startMusicHttpServer(opts: BotHttpOptions): BotHttpServer {
+  const { port, bind, secret } = opts;
+  const app = createBotHttpApp(opts);
   const server = serve(
     { fetch: app.fetch, port, hostname: bind },
     (info) => {
-      console.log(`[music-http] Listening on ${bind}:${info.port}`);
+      log.info({ bind, port: info.port, auth: Boolean(secret) }, 'bot HTTP server listening');
     },
   );
 
   server.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
-      console.error(
-        `[music-http] Port ${port} is already in use. Stop the other process (e.g. \`docker compose stop discord-bot\`) or set MUSIC_BOT_HTTP_PORT to a free port.`,
+      log.error(
+        { port },
+        `Port ${port} is already in use. Stop the other process (e.g. \`docker compose stop discord-bot-host\`) or set MUSIC_BOT_HTTP_PORT to a free port. Continuing without the bot HTTP server.`,
       );
-      console.warn('[music-http] Continuing without local music HTTP server in this process.');
       return;
-    } else {
-      console.error('[music-http] HTTP server error:', err.message);
     }
+    log.error({ err }, 'bot HTTP server error');
     // Immediate process.exit(1) on Windows can trip libuv (UV_HANDLE_CLOSING) while the HTTP handle is still unwinding.
     setImmediate(() => process.exit(1));
   });
+
+  return {
+    close: () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        // Keep-alive sockets would hold close() open; the hub only makes short requests.
+        (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+      }),
+  };
 }

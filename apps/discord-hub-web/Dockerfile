@@ -2,6 +2,16 @@
 # Hela repot behövs (workspaces: @clanker/ui m.m.).
 FROM node:22-alpine AS build
 WORKDIR /repo
+# .env is not in the build context (.dockerignore), so Vite's build-time variables come in as build args
+# (compose passes them from the root .env).
+ARG VITE_DISCORD_HUB_GUILD_ID=""
+ARG VITE_API_URL=""
+ARG VITE_WHEEL_COLLAB_URL=""
+ENV VITE_DISCORD_HUB_GUILD_ID=$VITE_DISCORD_HUB_GUILD_ID \
+    VITE_API_URL=$VITE_API_URL \
+    VITE_WHEEL_COLLAB_URL=$VITE_WHEEL_COLLAB_URL \
+    YOUTUBE_DL_SKIP_PYTHON_CHECK=1 \
+    YOUTUBE_DL_SKIP_DOWNLOAD=1
 COPY . .
 RUN npm ci && npm run build -w discord-hub-web
 

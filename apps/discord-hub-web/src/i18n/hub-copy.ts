@@ -306,6 +306,7 @@ export type HubCopy = {
     loreQuoteBlurb: string;
     loreQuoteNowServingLabel: string;
     loreQuoteDailyBadge: string;
+    loreQuoteBookBadge: string;
     loreQuoteCopy: string;
     loreQuoteShuffle: string;
     loreQuoteToastTitle: string;
@@ -1350,6 +1351,7 @@ const SV: HubCopy = {
     loreQuoteBlurb: "En liten lore-krok. Bra för att känna att platsen minns saker.",
     loreQuoteNowServingLabel: "Dagens utdrag",
     loreQuoteDailyBadge: "daily",
+    loreQuoteBookBadge: "ur citatboken",
     loreQuoteCopy: "Kopiera",
     loreQuoteShuffle: "Nytt utdrag",
     loreQuoteToastTitle: "Citat kopierat",
@@ -2428,6 +2430,7 @@ const EN: HubCopy = {
     loreQuoteBlurb: "A small lore hook. Helps the place feel like it remembers.",
     loreQuoteNowServingLabel: "Now serving",
     loreQuoteDailyBadge: "daily",
+    loreQuoteBookBadge: "from the quote book",
     loreQuoteCopy: "Copy",
     loreQuoteShuffle: "New excerpt",
     loreQuoteToastTitle: "Quote copied",

@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "migrate": "tsx src/migrate.ts"
+    "migrate": "tsx src/migrate.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@clanker/hub-pg-migrate": "file:../../packages/hub-pg-migrate",
@@ -30,6 +31,8 @@
     "@types/node": "^22.10.2",
     "@types/ws": "^8.18.1",
     "tsx": "^4.19.2",
-    "typescript": "~5.7.2"
+    "typescript": "~5.7.2",
+    "vitest": "^3.2.7",
+    "@electric-sql/pglite": "^0.3.16"
   }
 }

@@ -1,5 +1,8 @@
 import { type Client, Events, type VoiceState } from 'discord.js';
 import { getPool } from './db.js';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('voice-tracker');
 
 type DB = { query: (sql: string, params?: unknown[]) => Promise<unknown> };
 
@@ -96,10 +99,10 @@ export async function snapshotAllGuilds(client: Client<true>): Promise<void> {
     }
 
     await db.query('COMMIT');
-    console.log('[voice-tracker] snapshot complete');
+    log.info('snapshot complete');
   } catch (err) {
     await db.query('ROLLBACK');
-    console.error('[voice-tracker] snapshot failed', err);
+    log.error({ err }, 'snapshot failed');
   } finally {
     db.release();
   }
@@ -137,7 +140,7 @@ export async function handleVoiceStateUpdate(
       await upsertVoiceState(pool as unknown as DB, newState);
     }
   } catch (err) {
-    console.error('[voice-tracker] VoiceStateUpdate error', err);
+    log.error({ err }, 'VoiceStateUpdate error');
   }
 }
 
