@@ -24,13 +24,19 @@ tincan (192.168.0.174, Ubuntu 26.04, x86_64) följer mönstret `/srv/stacks/<nam
 | Repot (`feat/bot-overhaul`) | `/srv/stacks/clanker` | klonat |
 | `.env` (chmod 600) | `/srv/stacks/clanker/.env` | skapad: icke-hemliga värden ifyllda, Postgres-lösenord, `SESSION_SECRET` och `BOT_HTTP_SECRET` genererade. **Tomt att fylla i:** `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_SECRET`, `SETUP_ALLOWED_GUILD_IDS`, valfria API-nycklar |
 | `docker-compose.override.yml` (gitignorerad) | `/srv/stacks/clanker` | lägger `discord-hub-web` och `discord-hub-api` på nätverket `edge` |
-| Caddy-site | `/srv/stacks/proxy/conf.d/clanker.caddy` | `http://clanker.discord` (`/api` → hub-api, resten → webben) och `http://clanker.pihole` → Pi:n. Laddad, övriga siter opåverkade |
+| Caddy-site | `/srv/stacks/proxy/conf.d/clanker.caddy` | **`https://clanker.tincan.internal`** (tincans lokala CA): `/api` → hub-api, `/collab/*` → wheel-collab (wss), resten → webben. Pi-hole löser redan `*.tincan.internal` till tincan, så **ingen DNS-ändring behövs och Pi-hole rörs inte** |
 | ufw | `3012/tcp ALLOW från 172.16.0.0/12` | Docker-nät → botens HTTP. Inte öppet mot LAN |
 | Imager | `docker compose build` | byggda |
 
 Clankers egen `clanker-caddy` används **inte** på tincan (port 80/443 ägs av `/srv/stacks/proxy`), därför
-`COMPOSE_PROFILES=db,discord,discord-host`. Portar publicerade av Docker (3002 för wheel-collab) går förbi ufw.
-Webbens port 4173 är bunden till 127.0.0.1.
+`COMPOSE_PROFILES=db,discord,discord-host`. Webbens port 4173 och wheel-collab 3002 är bundna till 127.0.0.1
+(Caddy når dem via `edge`).
+
+**Driftsatt 2026-09-26** med en **ny, tom** databas (ingen data flyttades från Pi:n):
+`FRONTEND_URL=https://clanker.tincan.internal`, `DISCORD_REDIRECT_URI=https://clanker.tincan.internal/api/auth/discord/callback`,
+`COOKIE_SECURE=1`, `VITE_WHEEL_COLLAB_URL=wss://clanker.tincan.internal/collab`. Boten ("Clanker", app `1486101477994004631`)
+är bara med i Hermes (`1537349490736898100`), därför är `DISCORD_GUILD_ID` och `VITE_DISCORD_HUB_GUILD_ID` satta till Hermes.
+neutralen-bot på Pi:n är avstängd (`systemctl disable --now neutralen-bot`).
 
 > **Samma Discord-app som neutralen-bot.** Clanker och neutralen-bot använder båda applikation `1486101477994004631`.
 > Bara **en** av dem får köra med token åt gången. neutralen-bot-imagen (`neutralen-bot:overhaul`) finns byggd
@@ -156,7 +162,7 @@ API:t och boten kör båda migrationerna vid start. De tar ett advisory lock, s�
 
 ---
 
-## 5. Peka om hostnamnen i Pi-hole
+## 5. Peka om hostnamnen i Pi-hole (behövs inte på tincan: hubben ligger på `clanker.tincan.internal`)
 
 Alla namn som i dag pekar på Pi:ns IP ska peka på **tincan**:
 `clanker.discord`, `dev.clanker.discord`, `clanker.tools`, `dev.clanker.tools` och `clanker.pihole`.
