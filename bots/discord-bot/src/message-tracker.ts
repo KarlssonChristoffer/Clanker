@@ -7,11 +7,9 @@
  *   MessageContent    — read message content (privileged — enable in Developer Portal)
  */
 
-import { Events, type Client, type Message } from 'discord.js';
+import { type Message } from 'discord.js';
+import type { MessageHandler } from './core/message-pipeline.js';
 import { getPool } from './db.js';
-import { childLogger } from './core/logger.js';
-
-const log = childLogger('message-tracker');
 
 async function logMessage(msg: Message): Promise<void> {
   if (!msg.guildId) return;   // ignore DMs
@@ -35,9 +33,8 @@ async function logMessage(msg: Message): Promise<void> {
   );
 }
 
-export function registerMessageTracker(client: Client): void {
-  client.on(Events.MessageCreate, async (msg) => {
-    try { await logMessage(msg); }
-    catch (err) { log.error({ err }, 'MessageCreate error'); }
-  });
-}
+/** First handler in the message pipeline: one row per message in stats.message_log. */
+export const messageLogHandler: MessageHandler = {
+  name: 'message-log',
+  handle: logMessage,
+};

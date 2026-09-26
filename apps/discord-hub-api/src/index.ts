@@ -21,10 +21,7 @@ import {
   setOAuthCookiesAfterLogin,
 } from "./discord-proxy.js";
 import { DISCORD_OAUTH_TOKENS_COOKIE } from "./discord-tokens.js";
-import {
-  getGatewayRuntime,
-  startDiscordGateway,
-} from "./discord-gateway.js";
+import { getBotGuildLive, getBotLiveHealth } from "./bot-live.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
 import { getPublicProfile, upsertProfileFromSession } from "./profile-store.js";
@@ -1167,21 +1164,7 @@ function createApp(env: AppEnv) {
     if (!session) {
       return c.json({ error: "Unauthorized" }, 401);
     }
-    const rt = getGatewayRuntime();
-    if (!rt) {
-      return c.json({
-        gateway_connected: false,
-        last_heartbeat_ack_at: null,
-        last_dispatch_at: null,
-        guilds_subscribed: env.discordGatewayGuildIds,
-        reconnect_attempt: 0,
-        intents: env.discordGatewayIntents,
-        degraded: true,
-        degraded_reason:
-          "Gateway not running — set DISCORD_BOT_TOKEN and non-empty DISCORD_GATEWAY_GUILD_IDS",
-      });
-    }
-    return c.json(rt.getHealth());
+    return c.json(await getBotLiveHealth(getPool()));
   });
 
   app.get("/api/bot/live/guild/:id", async (c) => {
@@ -1201,19 +1184,7 @@ function createApp(env: AppEnv) {
     if (!access.ok) {
       return c.json(access.body, access.status);
     }
-    const rt = getGatewayRuntime();
-    if (!rt) {
-      return c.json({
-        guild_id: guildId,
-        gateway_connected: false,
-        gateway_degraded: true,
-        gateway_degraded_reason:
-          "Gateway not running — set DISCORD_BOT_TOKEN and DISCORD_GATEWAY_GUILD_IDS",
-        last_event_at: null,
-        voice_users: [],
-      });
-    }
-    return c.json(rt.getGuildLive(guildId));
+    return c.json(await getBotGuildLive(getPool(), guildId));
   });
 
   app.get("/api/bot/guild/:id/voice-states", async (c) => {
@@ -1801,15 +1772,10 @@ loadDotenv({
   override: true,
 });
 
-function shutdownGateway(): void {
-  getGatewayRuntime()?.stop();
-}
-
 let stopWheelCollabServer: (() => Promise<void>) | null = null;
 let httpServer: ServerType | null = null;
 
 async function shutdownAndExit(code: number): Promise<void> {
-  shutdownGateway();
   if (httpServer) {
     await new Promise<void>((resolve) => {
       httpServer!.close(() => resolve());
@@ -1850,7 +1816,6 @@ async function main(): Promise<void> {
   }
 
   const app = createApp(env);
-  startDiscordGateway(env);
   stopWheelCollabServer = startWheelCollabServer(env);
   if (env.riotApiKey && env.leagueAutoSyncEnabled) {
     startLeagueSyncScheduler(env.riotApiKey);

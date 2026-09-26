@@ -33,7 +33,8 @@ Relaterade detaljer:
 
 **Backend**
 - `apps/discord-hub-api/src/index.ts` — huvudsakliga endpoints.
-- `apps/discord-hub-api/src/discord-*.ts` — OAuth, proxy, gateway, bot‑REST.
+- `apps/discord-hub-api/src/discord-*.ts` — OAuth, proxy, bot‑REST.
+- `apps/discord-hub-api/src/bot-live.ts` — live-status/röst från botens tabeller (ingen egen gateway).
 - `apps/discord-hub-api/src/riot-lol.ts` — League‑integration (Riot **match-v5**: match‑ID‑lista per PUUID, paginerat 100 åt gången; utan `type`‑filter får du alla kötyper Riot returnerar inkl. många customs. `gameMode` / `gameType` / `mapId` sparas i `stats.league_matches` efter migration `012_league_match_modes`).
 - Periodisk League‑auto‑sync i API‑processen är **av** som standard; sätt `LEAGUE_AUTO_SYNC_ENABLED=1` i API‑`.env` för att starta den. `LEAGUE_MATCH_FETCH_COUNT` styr hur djupt den hämtar match‑ID:n per användare och cykel när den är påslagen.
 - `GET /api/stats/league/matches` — paginerad lista över inspelade matcher (för hubbens League‑statistik‑vy).
@@ -104,9 +105,9 @@ Många ser **502 Bad Gateway** eller en tom/felande sida **efter** att de klicka
 
 ---
 
-**„Gateway” på dashboarden** (badge „frånkopplad” / varningstext) är **Discord WebSocket** för live röst m.m.: kräver `DISCORD_BOT_TOKEN` och `DISCORD_GATEWAY_GUILD_IDS` som innehåller **samma guild** som `VITE_DISCORD_HUB_GUILD_ID`. Det är **ortogonalt** mot OAuth.
+**„Gateway” på dashboarden** (badge „frånkopplad” / varningstext) visar **discord-botens** status: boten är den enda processen med Discord-gateway och skriver en heartbeat till `bot.runtime_status` var 30:e sekund samt röststatus till `bot.guild_voice_states`. Hub-API:t läser därifrån. Badgen blir „frånkopplad” om boten inte kör, inte är ansluten till Discord eller inte skickat heartbeat på 90 s. Det är **ortogonalt** mot OAuth.
 
-**Viktigt:** bara **en** process åt gången får köra **Gateway** med samma bot-token (t.ex. inte både din maskin och polarens med samma `DISCORD_BOT_TOKEN` + gateway-guilds — då konkurrerar de och anslutningen blir ostadig).
+**Viktigt:** bara **en** bot-process åt gången med samma `DISCORD_BOT_TOKEN` (inte både Docker och `npm run dev:discord-bot`, och inte två maskiner).
 
 ## Musikbot (`discord-hub` + musik i webben)
 
@@ -131,7 +132,7 @@ Webb + **discord-hub-api** räcker **inte** för kö/playback. Då behövs även
 
 Kommandon (play/skip/…) går alltid till **discord-bot**. **Kö och nu spelas** läses också från **botens** databas när `MUSIC_BOT_HTTP_URL` är satt — då behöver hub-api **inte** dela `DATABASE_URL` med botten bara för att visa musik. Spellistor, voice-snapshot i DB m.m. följer fortfarande **respektive** hub-api:s Postgres om ni inte synkar den.
 
-**Discord Gateway** (live voice i hubben) tillåter **inte** två samtidiga anslutningar med **samma bot-token**. Låt bara **en** `discord-hub-api` köra med `DISCORD_GATEWAY_GUILD_IDS` satt; på övriga instanser: lämna gateway-listan tom (voice-widgeten blir begränsad men OAuth/musik via delad musikbot kan fungera).
+**Live voice** i hubben kommer från botens tabeller (`bot.guild_voice_states`, `bot.runtime_status`). En hub-api som inte delar Postgres med boten visar därför ingen live-röst. OAuth och musik via `MUSIC_BOT_HTTP_URL` fungerar ändå.
 
 För att en **annan dator** ska nå musik-HTTP: sätt `MUSIC_BOT_HTTP_BIND=0.0.0.0` på bot-värden, öppna brandvägg till `MUSIC_BOT_HTTP_PORT`, och sätt polarens `MUSIC_BOT_HTTP_URL` till `http://<din-lan-ip>:3012` (byt port om ni ändrat den).
 

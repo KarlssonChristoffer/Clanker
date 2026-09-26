@@ -28,23 +28,6 @@ function parseSnowflakeList(raw: string | undefined): string[] {
     .filter((s) => /^\d{5,32}$/.test(s));
 }
 
-function parseGatewayIntents(raw: string | undefined): number {
-  const key = raw?.trim().toLowerCase() ?? "voice";
-  const PRESETS: Record<string, number> = {
-    minimal: 1 << 0,
-    voice: (1 << 0) | (1 << 7),
-    presence: (1 << 0) | (1 << 7) | (1 << 8),
-  };
-  if (key in PRESETS) {
-    return PRESETS[key]!;
-  }
-  const n = Number.parseInt(key, 10);
-  if (Number.isFinite(n) && n >= 0 && n <= 0xffff_ffff) {
-    return n;
-  }
-  return PRESETS.voice;
-}
-
 function truthyEnv(name: string): boolean {
   const v = process.env[name]?.trim().toLowerCase();
   return v === "1" || v === "true" || v === "yes";
@@ -198,12 +181,6 @@ export function loadEnv() {
     ),
     discordHubEnforceGuildMembership: truthyEnv(
       "DISCORD_HUB_ENFORCE_GUILD_MEMBERSHIP",
-    ),
-    discordGatewayGuildIds: parseSnowflakeList(
-      process.env.DISCORD_GATEWAY_GUILD_IDS,
-    ),
-    discordGatewayIntents: parseGatewayIntents(
-      process.env.DISCORD_GATEWAY_INTENTS,
     ),
     dbConfig: parseDbConfig(),
   };

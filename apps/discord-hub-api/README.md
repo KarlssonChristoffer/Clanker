@@ -27,8 +27,6 @@ Kopiera [`.env.example`](./.env.example) till **repo-roten** `.env` och/eller `a
 | `DISCORD_PROXY_BOT_PREFIXES` | Valfritt. Allowlist för bot-REST-proxyn. Standard: `guilds/,channels/`. |
 | `DISCORD_HUB_ALLOWED_GUILD_IDS` | Valfritt men **rekommenderas i prod**. Kommaseparerade snowflakes. Om satt får anroparen endast summary/live för dessa guilds. Tomt = ingen begränsning (endast för betrodd dev). |
 | `DISCORD_HUB_ENFORCE_GUILD_MEMBERSHIP` | Valfritt. `1`/`true`: verifiera att inloggad användare (session `sub`) är medlem i guild via bot REST. |
-| `DISCORD_GATEWAY_GUILD_IDS` | Valfritt. Kommaseparerade guild-IDs. Om satt tillsammans med bot-token startar en **Gateway-klient** som prenumererar på voice-state för dessa guilds. |
-| `DISCORD_GATEWAY_INTENTS` | Valfritt. `minimal` (bara GUILDS), `voice` (GUILDS + GUILD_VOICE_STATES, standard), `presence` (inkl. GUILD_PRESENCES, **privileged**), eller decimalt bitmask. Se [Gateway intents](https://discord.com/developers/docs/topics/gateway#gateway-intents). |
 | `DISCORD_TOKEN_ENCRYPTION_KEY` | Valfritt. Minst 32 UTF-8 byte; dedikerad nyckel för krypterad OAuth-cookie (`discord_oauth_tokens`). |
 | `PORT` | Valfritt, standard `3001` (ska matcha Vite-proxyn i `discord-hub-web`). |
 | `MUSIC_BOT_HTTP_URL` | **Krävs för musik** i hubben (t.ex. `http://127.0.0.1:3012`). Bas-URL till `discord-bot`:s HTTP-server (`MUSIC_BOT_HTTP_PORT`, standard **3012**). Utan denna returnerar musik-endpoints 503 („Music bot not configured”). Bot-processen måste köra parallellt med API:t. |
@@ -41,7 +39,7 @@ Kopiera [`.env.example`](./.env.example) till **repo-roten** `.env` och/eller `a
 3. **Bot** → skapa bot, kopiera **token** till `DISCORD_BOT_TOKEN` (rotera om den läcker).
 4. Bjud in boten: [Bot authorization](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow) — välj **minsta** permissions du behöver (undvik Administrator i onödan).
 5. **Privileged Gateway Intents** (under Bot): slå endast på det ni behöver. **Presence** och **Message content** är privileged och kan kräva motivering hos Discord.
-6. För live **voice** räcker oftast **GUILD_VOICE_STATES** (samt GUILDS) — motsvarar preset `voice` för `DISCORD_GATEWAY_INTENTS`.
+6. Live **voice** kräver ingen egen gateway i API:t: discord-bot skriver röststatus till `bot.guild_voice_states` och en heartbeat till `bot.runtime_status`.
 
 OAuth-användare och bot-token är **olika** saker; hubben exponerar aldrig bot-token till webbläsaren.
 
@@ -94,7 +92,7 @@ Sedan starta `discord-hub-web` (`npm run dev`). Webbläsaren anropar `/api/...` 
 | `*` | `/api/bot/discord/*` | Inloggad användare + `DISCORD_BOT_TOKEN`: proxy med `Authorization: Bot …`. **503** om bot-token saknas. |
 | GET | `/api/bot/guild/:id/summary` | Inloggad + bot: sammansatt **REST-snapshot** (guild med `with_counts`, kanaler). **503** utan bot. **403** om allowlist/medlemskapsregler säger nej. **502/504** vid Discord-fel/timeout (en retry vid 429/503). |
 | GET | `/api/bot/live/health` | Inloggad: Gateway-status (`connected`, heartbeat-ack, reconnect-försök, intents, `degraded`). |
-| GET | `/api/bot/live/guild/:id` | Inloggad: Live **voice**-snapshot från Gateway-minne + anslutningsstatus. Tom lista om guild inte finns i `DISCORD_GATEWAY_GUILD_IDS` eller voice-intent saknas. |
+| GET | `/api/bot/live/guild/:id` | Inloggad: live **voice**-snapshot från `bot.guild_voice_states` + botens heartbeat (`bot.runtime_status`). `gateway_connected` = boten har skickat heartbeat de senaste 90 s. |
 | GET | `/api/integrations/league/status` | Inloggad: sparad Riot-koppling och senaste hämtade League-snapshot i minnet. |
 | POST | `/api/integrations/league/connect` | Inloggad: sparar `riotId`, `tagLine`, `region`, `rankPreference` och övriga League-inställningar. |
 | POST | `/api/integrations/league/sync` | Inloggad + `RIOT_API_KEY`: hämtar PUUID via Riot Account v1, rank via League v4 och senaste matcher via Match v5. Returnerar snapshot med rank och matchlista. |
