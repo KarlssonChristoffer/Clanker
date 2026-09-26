@@ -12,7 +12,7 @@ citatbok, spelkvällar och veckorapport. TypeScript, discord.js 14, Node ≥ 22.
 | Kommando | Vad det gör |
 |---|---|
 | `/ping` | Lever Clanker? Visar gateway-latens. |
-| `/play`, `/skip`, `/previous`, `/pause`, `/resume`, `/stop`, `/queue` | Musik (YouTube via yt-dlp, Spotify → YouTube, SoundCloud). |
+| `/play`, `/skip`, `/previous`, `/pause`, `/resume`, `/stop`, `/queue` | Musik (YouTube via yt-dlp, SoundCloud, Spotify-låtar/album/spellistor → YouTube; fungerar utan Spotify-nycklar). |
 | `/playlist skapa\|radera\|lista\|visa\|lagg-till\|ta-bort\|spela` | Sparade spellistor per server. |
 | `/admin funktioner [funktion] [läge]` | Feature-flaggor per server, med meny för att slå av och på. Kräver Hantera server. |
 | `/admin veckorapport-nu` | Posta veckorapporten direkt. |

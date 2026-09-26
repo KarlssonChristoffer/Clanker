@@ -10,9 +10,19 @@ import { UserFacingError } from '../core/interaction-errors.js';
 import { getPool } from '../db.js';
 import { enqueue, pause, previous, resume, skip, stop } from '../music-player.js';
 import { musicChannelId, rememberMusicChannel } from '../music-panel.js';
+import { parseSpotifyUrl } from '../spotify-public.js';
 import { EPHEMERAL, plural, requireGuildId, resolveVoiceChannelId } from './_shared.js';
 
 const log = childLogger('music');
+
+export function notFoundText(query: string): string {
+  const spotify = parseSpotifyUrl(query);
+  if (spotify && ['artist', 'show', 'episode'].includes(spotify.kind)) {
+    return '❌ Spotify-artister och poddar kan jag inte spela. Länka en låt, ett album eller en spellista.';
+  }
+  if (spotify) return '❌ Spotify-länken gick inte att läsa (privat spellista?). Prova att söka på låtens namn i stället.';
+  return '❌ Hittade varken låt eller spellista. Prova en annan sökning eller en direktlänk.';
+}
 
 /** Remember where music is being asked for (panel fallback) and point to #musik when it's elsewhere. */
 export async function panelHint(interaction: ChatInputCommandInteraction): Promise<string> {
@@ -44,7 +54,7 @@ export const play: SlashCommand = {
       throw new UserFacingError(`❌ Kunde inte spela det där: ${(err as Error).message}`);
     }
     if (!result) {
-      await interaction.editReply('❌ Hittade varken låt eller spellista. Prova en annan sökning eller en direktlänk.');
+      await interaction.editReply(notFoundText(query));
       return;
     }
     if (result.kind === 'playlist') {

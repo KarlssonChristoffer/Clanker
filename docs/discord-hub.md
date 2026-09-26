@@ -120,7 +120,7 @@ Webb + **discord-hub-api** räcker **inte** för kö/playback. Då behövs även
 
 3. **`DATABASE_URL`** för **både** hub-api och discord-bot mot **samma** Postgres (kö + `now_playing` ligger i DB). Kör migrationer om det saknas tabeller.
 
-4. **`bots/discord-bot/.env`:** `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, `DATABASE_URL` (samma som hubben). Valfritt: Spotify-nycklar om ni använder Spotify.
+4. **`bots/discord-bot/.env`:** `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, `DATABASE_URL` (samma som hubben). Valfritt: Spotify-nycklar (Spotify-länkar fungerar även utan, via publika sidor).
 
 5. **Röst i Discord:** användaren som köar musik ska vara **i en röstkanal**; bot-rollen behöver **Connect** + **Speak** (och ev. **Use Voice Activity**). På **Windows** med bot i **Docker Desktop** fungerar röst ofta **inte** (UDP/bridge) — kör botten med **`npm run dev:discord-bot` på värden** i stället, eller `discord-bot-host` på Linux/Pi (`docs/docker.md`).
 

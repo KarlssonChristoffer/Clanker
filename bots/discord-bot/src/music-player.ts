@@ -20,6 +20,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { type Client } from 'discord.js';
 import playdl from 'play-dl';
 import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath, ytdlpExtraArgs } from './media-env.js';
+import { fetchSpotifyTitle, fetchSpotifyTrackPublic, parseSpotifyUrl } from './spotify-public.js';
 import { getPool } from './db.js';
 import { childLogger } from './core/logger.js';
 
@@ -333,8 +334,12 @@ function parseSpotifyEmbedPlaylistHtml(html: string): { title: string; rows: Spo
   return rows.length ? { title, rows } : null;
 }
 
-async function fetchSpotifyPlaylistViaEmbed(playlistId: string): Promise<{ title: string; rows: SpotifyEmbedRow[] } | null> {
-  const embedUrl = `https://open.spotify.com/embed/playlist/${encodeURIComponent(playlistId)}`;
+/** Track rows from the public embed page; album and playlist embeds share the same markup (checked 2026-09-26). */
+async function fetchSpotifyListViaEmbed(
+  kind: 'playlist' | 'album',
+  id: string,
+): Promise<{ title: string; rows: SpotifyEmbedRow[] } | null> {
+  const embedUrl = `https://open.spotify.com/embed/${kind}/${encodeURIComponent(id)}`;
   try {
     const res = await fetch(embedUrl, {
       headers: {
@@ -354,6 +359,23 @@ async function fetchSpotifyPlaylistViaEmbed(playlistId: string): Promise<{ title
   }
 }
 
+/** Albums always, and playlists without keys, come from the embed page. */
+async function resolveSpotifyListViaEmbed(
+  kind: 'playlist' | 'album',
+  id: string,
+  requestedBy: string,
+  channelId: string,
+): Promise<PlaylistResolution | null> {
+  const [embedded, title] = await Promise.all([fetchSpotifyListViaEmbed(kind, id), fetchSpotifyTitle(kind, id)]);
+  if (!embedded?.rows.length) {
+    log.warn({ kind, id }, 'Spotify embed page listed no tracks (private or removed?)');
+    return null;
+  }
+  const tracks = await spotifyTrackNamesToYoutubeTracks(embedded.rows, requestedBy, channelId);
+  if (!tracks.length) return null;
+  return { title: title ?? embedded.title, tracks };
+}
+
 async function tryResolveSpotifyPlaylistFrom403Embed(
   playlistId: string,
   playlistTitle: string,
@@ -361,7 +383,7 @@ async function tryResolveSpotifyPlaylistFrom403Embed(
   channelId: string,
 ): Promise<PlaylistResolution | null> {
   log.warn('Spotify Web API returned 403 (many editorial/algorithmic playlists are blocked for newer developer apps since Nov 2024). Trying open.spotify.com/embed fallback…');
-  const embedded = await fetchSpotifyPlaylistViaEmbed(playlistId);
+  const embedded = await fetchSpotifyListViaEmbed('playlist', playlistId);
   if (!embedded?.rows.length) {
     log.warn('Embed fallback found no tracks. Options: use a playlist you created (public), a YouTube playlist, or request extended Web API access from Spotify.');
     return null;
@@ -426,11 +448,10 @@ async function spotifyTrackNamesToYoutubeTracks(
 }
 
 async function resolveSpotifyPlaylist(url: string, requestedBy: string, channelId: string): Promise<PlaylistResolution | null> {
-  const token = await getSpotifyToken();
-  if (!token) return null;
-
   const playlistId = spotifyPlaylistIdFromUrl(url);
   if (!playlistId) return null;
+  const token = await getSpotifyToken().catch(() => null);
+  if (!token) return resolveSpotifyListViaEmbed('playlist', playlistId, requestedBy, channelId);
 
   const market = spotifyDefaultMarket();
   const headers = { Authorization: `Bearer ${token}` };
@@ -545,6 +566,10 @@ async function resolvePlaylist(query: string, requestedBy: string, channelId: st
     if (/spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\//i.test(query)) {
       return await resolveSpotifyPlaylist(query, requestedBy, channelId);
     }
+    const spotifyLink = parseSpotifyUrl(query);
+    if (spotifyLink?.kind === 'album') {
+      return await resolveSpotifyListViaEmbed('album', spotifyLink.id, requestedBy, channelId);
+    }
 
     // YouTube playlist
     const ytValidate = await playdl.yt_validate(query);
@@ -611,23 +636,27 @@ async function resolvePlaylist(query: string, requestedBy: string, channelId: st
   }
 }
 
-async function resolveSpotifyTrack(url: string): Promise<{ title: string; artist: string } | null> {
-  const token = await getSpotifyToken();
-  if (!token) return null;
+/** Song + artist for a Spotify track link: Web API when keys are set, otherwise the public track page. */
+async function resolveSpotifyTrack(url: string): Promise<{ title: string; artist: string | null; durationSec: number | null } | null> {
+  const link = parseSpotifyUrl(url);
+  if (link?.kind !== 'track') return null;
 
-  const match = url.match(/spotify\.com\/(?:intl-[a-z]{2}\/)?track\/([A-Za-z0-9]+)/i);
-  if (!match) return null;
-
-  const res = await fetch(`https://api.spotify.com/v1/tracks/${encodeURIComponent(match[1])}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) return null;
-
-  const data = (await res.json()) as {
-    name: string;
-    artists: { name: string }[];
-  };
-  return { title: data.name, artist: data.artists[0]?.name ?? '' };
+  const token = await getSpotifyToken().catch(() => null);
+  if (token) {
+    const res = await fetch(`https://api.spotify.com/v1/tracks/${encodeURIComponent(link.id)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { name: string; artists: { name: string }[]; duration_ms?: number };
+      return {
+        title: data.name,
+        artist: data.artists[0]?.name ?? null,
+        durationSec: data.duration_ms ? Math.round(data.duration_ms / 1000) : null,
+      };
+    }
+    log.warn(`Spotify track API ${res.status}; falling back to the public track page`);
+  }
+  return fetchSpotifyTrackPublic(link.id);
 }
 
 export async function initPlayDl(): Promise<void> {
@@ -641,14 +670,17 @@ export async function initPlayDl(): Promise<void> {
       log.warn({ detail: (err as Error).message }, 'Spotify credentials failed');
     }
   } else {
-    log.warn('No Spotify credentials — Spotify URLs will not work.');
+    log.info('No Spotify credentials: Spotify links are read from public pages (tracks, albums, playlists).');
   }
 }
 
 async function resolveTrack(query: string, requestedBy: string, channelId: string): Promise<Track | null> {
   try {
-    // Spotify URL — resolve via Spotify API then search YouTube
-    if (query.includes('spotify.com/track/')) {
+    // Spotify track (also /intl-xx/ links) — song + artist from Spotify, then search YouTube.
+    // Artist, podcast and episode links are not playable.
+    const spotifyLink = parseSpotifyUrl(query);
+    if (spotifyLink && spotifyLink.kind !== 'track') return null;
+    if (spotifyLink) {
       const sp = await resolveSpotifyTrack(query);
       if (!sp) return null;
       const searchQuery = `${sp.title} ${sp.artist}`.trim();
@@ -665,7 +697,7 @@ async function resolveTrack(query: string, requestedBy: string, channelId: strin
         title: sp.title,
         artist: sp.artist || null,
         thumbnail: yt.thumbnails?.[0]?.url ?? null,
-        durationSec: yt.durationInSec ?? null,
+        durationSec: yt.durationInSec ?? sp.durationSec ?? null,
         source: 'spotify',
         requestedBy,
         channelId,
@@ -1119,7 +1151,7 @@ export type EnqueueResult =
   | { kind: 'playlist'; title: string; queued: number; first: Track };
 
 function isPlaylistUrl(query: string): boolean {
-  if (/spotify\.com\/(?:intl-[a-z]{2}\/)?playlist\//i.test(query)) return true;
+  if (/spotify\.com\/(?:intl-[a-z]{2}\/)?(?:playlist|album)\//i.test(query)) return true;
   if (query.includes('list=') && (query.includes('youtube.com') || query.includes('youtu.be'))) return true;
   if (query.includes('soundcloud.com') && query.includes('/sets/')) return true;
   return false;
