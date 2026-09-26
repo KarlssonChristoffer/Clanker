@@ -20,7 +20,7 @@ Relaterade detaljer:
 - `GET /api/auth/me` används av webben för session/profil.
 
 **Valfritt**
-- `apps/discord-bot` finns som separat tjänst (om/when du behöver den).
+- **`bots/discord-bot`** (Clanker-boten) är enda processen med Discord-gateway: musik, trackers, Jev, WoW, setup m.m. Se `bots/discord-bot/README.md`.
 
 ## Katalogkarta (snabba ingångar)
 
@@ -157,8 +157,43 @@ Snabb guide:
 
 ## Produktionskörning (kort)
 
+Hela Discord-stacken körs på **tincan** (Pi:n kör bara Pi-hole). Flytt och drift: `scripts/migrate-to-tincan.md`.
+
 ```bash
-docker compose --profile discord up -d --build discord-hub-web
+# tincan: Postgres, hub-api + webb, boten (host-nät för röst), Caddy (/api → hub-api)
+docker compose --profile db --profile discord --profile discord-host --profile caddy up -d --build
 ```
 
+Profilen `discord` = `discord-hub-web` + `discord-hub-api`. Bridge-boten ligger i `discord-bridge` (bara för felsökning).
+Pi-hole har profilen `pihole`. Nattlig backup: `scripts/db-backup.sh` + `infra/systemd/clanker-db-backup.timer`.
 Vill du köra via Caddy‑domäner, se `docs/docker.md`.
+
+## Discord-boten (Clanker)
+
+Kommandon, arkitektur, intents och behörigheter finns i `bots/discord-bot/README.md`. Manuell testlista för
+testservern Hermes: `TESTPLAN.md`. Alla variabler är kommenterade i `bots/discord-bot/.env.example`. Boten i Docker
+läser rotens `.env` via `env_file`.
+
+| Variabel | Standard | Vad den gör |
+|---|---|---|
+| `DISCORD_GUILD_ID` | – | Guild(s) för guild-scopade slash-kommandon (kommaseparerat), t.ex. Hermes. Tom = globalt. |
+| `DISCORD_FORCE_COMMAND_SYNC` | – | `1` = registrera om kommandona även om hashen är oförändrad. |
+| `BOT_HTTP_SECRET` | – | Delad hemlighet `X-Clanker-Secret` mellan hub-api och botens HTTP (3012). Krävs när boten lyssnar på 0.0.0.0. |
+| `LOG_LEVEL` | `info` | pino-nivå. JSON i produktion, färgad text i dev (`LOG_PRETTY=0` tvingar JSON). |
+| `TYPESAFE_API_KEY` | – | Jev (TypeSafe). Utan nyckel är Jev-funktionerna avstängda. |
+| `TYPESAFE_API_BASE` | `https://api.typesafe.ai` | Jev-API:ts bas-URL. |
+| `JEV_MODEL` | `jev-1.13.0` | Låst modellversion (alias som `jev-latest` flyttar sig). |
+| `JEV_MAX_CONCURRENCY` / `JEV_TIMEOUT_MS` / `JEV_USD_PER_MTOK` / `JEV_REFLEX_COOLDOWN_S` | 4 / 15000 / 0.042 / 60 | Samtidiga anrop, timeout per försök, pris i `/jevstats`, reflex-cooldown. |
+| `SETUP_ALLOWED_GUILD_IDS` | – | Guilds där `/setup` får skapa, flytta och arkivera. Tom = ingenstans. |
+| `WOW_FLAVOR` | `retail` | `retail`, `classic` eller `forever`. Gänget spelar **forever**. |
+| `WOW_REGION` / `WOW_LOCALE` | `eu` / `en_GB` | Blizzard/Raider.IO-region och språk. |
+| `WOW_DEFAULT_REALM` | – | Standardrealm (Forever: ruleset) för `/wow koppla`. Sätts när omröstningen är klar. |
+| `BLIZZARD_CLIENT_ID` / `BLIZZARD_CLIENT_SECRET` | – | Blizzard API (realm-autocomplete på retail, classic-lookup). |
+| `WOW_PROFILE_NAMESPACE` | – | T.ex. `classic1x`. Sätts för Forever när/om Blizzard öppnar ett namespace. |
+| `RAIDERIO_ACCESS_KEY` | – | Högre rate limit hos Raider.IO (retail). |
+| `WOW_RESET_WEEKDAY` / `WOW_RESET_TIME_UTC` | `3` / `04:00` | Weekly reset för "Ny vecka"-inlägget (EU retail: onsdag 04:00 UTC). |
+| `YTDLP_EXTRA_ARGS` / `YTDLP_AUTO_UPDATE` | – / – | Docker-imagen sätter `--js-runtimes node` och `1`. |
+
+**Hub-api** läser `BOT_HTTP_SECRET` (skickas till boten) och behöver inte längre `DISCORD_GATEWAY_GUILD_IDS` eller
+`DISCORD_GATEWAY_INTENTS`. Livevyn läser `bot.runtime_status` och `bot.guild_voice_states`.
+Citatboken nås via `GET /api/bot/guild/:id/quotes`.

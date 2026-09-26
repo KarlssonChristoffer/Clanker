@@ -12,7 +12,7 @@ cd ~/apps/Clanker   # anpassa sökväg efter din maskin
 
 ## Ett kommando från SSH (`clanker.run`)
 
-Skriptet [`scripts/clanker-run`](../scripts/clanker-run) byter alltid till **repots rot** och kör `docker compose --profile caddy up -d --build` — **Caddy startas alltid** (samma som `clanker up`). Övriga profiler styrs av **`COMPOSE_PROFILES` i `.env`** (t.ex. `discord`, `devtools`, `db`). Utan `COMPOSE_PROFILES` får du alltså i praktiken Pi-hole (ingen profil) **plus** Caddy. Du behöver inte längre lägga `caddy` i `COMPOSE_PROFILES` för `clanker-run` / `clanker up`; variabeln gäller webb/db m.m. (se `.env.example`).
+Skriptet [`scripts/clanker-run`](../scripts/clanker-run) byter alltid till **repots rot** och kör `docker compose --profile caddy up -d --build` — **Caddy startas alltid** (samma som `clanker up`). Övriga profiler styrs av **`COMPOSE_PROFILES` i `.env`** (t.ex. `discord`, `devtools`, `db`). Utan `COMPOSE_PROFILES` får du alltså i praktiken bara Caddy. Pi-hole har profilen `pihole` (på Pi:n: `COMPOSE_PROFILES=pihole`). Du behöver inte längre lägga `caddy` i `COMPOSE_PROFILES` för `clanker-run` / `clanker up`; variabeln gäller webb/db m.m. (se `.env.example`).
 
 **Vite i bakgrunden (valfritt):** sätter du **`CLANKER_VITE_DEV=1`** i `.env` och har kört **`npm install`** i roten startar skriptet efter lyckad Compose-körning även **`npm run dev:all`** (discord-hub + dev-tools) i bakgrunden med `setsid`, så Caddy kan nå `dev.clanker.*` utan separat terminal. PID sparas i **`.clanker/vite-dev.pid`** (gitignorerad), logg i **`.clanker/vite-dev.log`**. Utan `npm` eller `node_modules/` skrivs en varning och Compose påverkas inte. Om en Vite-process redan körs enligt PID-filen startas ingen ny.
 
@@ -39,7 +39,7 @@ clanker.run
 
 Skriptet [`scripts/clanker-kill`](../scripts/clanker-kill) stoppar först **Vite** om **`.clanker/vite-dev.pid`** finns (samma som `clanker-run` skapade med `CLANKER_VITE_DEV=1` — hela processgruppen avslutas), därefter som standard **`docker compose down`** från **repots rot** (samma `.env` / `COMPOSE_PROFILES` som vid start).
 
-**Pi-hole och DNS:** `clanker-pihole` har ingen Compose-profil och ingår därför i samma projekt. **`docker compose down` stoppar alltså Pi-hole också.** Klienter som i routern/DHCP **bara** har Pis IP som DNS-server får då inga DNS-svar (internet “fungerar inte”) tills Pi-hole startar igen — t.ex. med `./scripts/clanker-run` eller `docker compose up -d`. Lägg gärna in **sekundär DNS** (t.ex. `1.1.1.1`) i routern så uppslag fungerar om Pi är nere; se [pihole/README_PIHOLE.md](../pihole/README_PIHOLE.md) (avsnitt om DHCP och sekundär DNS).
+**Pi-hole och DNS:** `clanker-pihole` har Compose-profilen `pihole` (sedan flytten av Discord-stacken till tincan kör Pi:n bara Pi-hole, med `COMPOSE_PROFILES=pihole` i `.env`). **`docker compose down` på Pi:n stoppar Pi-hole.** Klienter som i routern/DHCP **bara** har Pis IP som DNS-server får då inga DNS-svar (internet “fungerar inte”) tills Pi-hole startar igen — t.ex. med `./scripts/clanker-run` eller `docker compose up -d`. Lägg gärna in **sekundär DNS** (t.ex. `1.1.1.1`) i routern så uppslag fungerar om Pi är nere; se [pihole/README_PIHOLE.md](../pihole/README_PIHOLE.md) (avsnitt om DHCP och sekundär DNS).
 
 **Lämn Pi-hole igång:** sätt **`CLANKER_KILL_KEEP_PIHOLE=1`** i `.env`. Då kör skriptet `docker compose stop` på `discord-hub-web`, `dev-tools-web`, `clanker-caddy` och `clanker-db` i stället för `down`. Containrar blir kvar i *exited*-läge (till skillnad från `down`). **Extra argument** (t.ex. `--volumes`) **används inte** i det läget — använd full `down` utan variabeln om du behöver dem.
 
@@ -129,7 +129,7 @@ docker compose --profile discord --profile devtools --profile caddy up -d --buil
 docker compose up -d --build
 ```
 
-(Pi-hole startar fortfarande; den har ingen profil.)
+(Pi-hole startar bara med profilen `pihole`.)
 
 ---
 
@@ -167,12 +167,12 @@ I `docker-compose.yml` finns fem tjänster. **Profiler** styr vilka som startar 
 | `dev-tools-web` | `dev-tools-web` | `devtools` | Port **4174→80** (`DEV_TOOLS_WEB_PORT`) |
 | `clanker-caddy` | `clanker-caddy` | `caddy` | HTTP på värd: `CADDY_HTTP_PORT` (standard **80**). Prod, Pi-hole-admin, dev-Vite — se [Caddy](#caddy-reverse-proxy); `extra_hosts: host.docker.internal:host-gateway`. |
 | `clanker-db` | `clanker-db` | `db` | Postgres 16, volym `clanker-pgdata`; **en** server/port, **två** databaser vid ny volym: `POSTGRES_DB` (standard **`clanker_discord`**) + `POSTGRES_EXTRA_DB` (standard `clanker_devtools`). Init: [infra/postgres/docker-entrypoint-initdb.d/](../infra/postgres/docker-entrypoint-initdb.d/). |
-| `clanker-pihole` | `clanker-pihole` | *(ingen)* | `network_mode: host` — delar Pi:ns nätverksstack |
+| `clanker-pihole` | `clanker-pihole` | `pihole` | `network_mode: host` — delar Pi:ns nätverksstack |
 
 - **Ingen profil** = tjänsten ingår i “default”-uppsättningen när du kör `docker compose up` utan `--profile`.
 - **Med profil** = tjänsten startar bara om du anger motsvarande `--profile` (eller sätter miljövariabeln `COMPOSE_PROFILES`).
 
-Pi-hole har ingen profil, så den startar ofta när du kör ett brett `up`. Webbapparna kräver explicit `discord` / `devtools`. **Caddy** kräver profilen `caddy`. Namnen `clanker.discord` / `clanker.tools` ger **502** om motsvarande webbcontainer inte kör; `clanker.pihole` funkar om Pi-hole lyssnar på värdens `WEB_PORT` och `CLANKER_PIHOLE_UPSTREAM` stämmer. `dev.clanker.*` ger **502** om Vite inte kör på **samma värd som Docker**.
+Pi-hole kräver profilen `pihole` (startar alltså inte av misstag på tincan). Webbapparna kräver explicit `discord` / `devtools`. **Caddy** kräver profilen `caddy`. Namnen `clanker.discord` / `clanker.tools` ger **502** om motsvarande webbcontainer inte kör; `clanker.pihole` funkar om Pi-hole lyssnar på värdens `WEB_PORT` och `CLANKER_PIHOLE_UPSTREAM` stämmer. `dev.clanker.*` ger **502** om Vite inte kör på **samma värd som Docker**.
 
 ## PostgreSQL: kom igång (första gången, Docker)
 
@@ -432,7 +432,7 @@ docker compose --profile discord --profile devtools --profile db up -d --build
 **Exempel — bara Pi-hole (om inget annat ska med):**
 
 ```bash
-docker compose up -d clanker-pihole
+docker compose --profile pihole up -d clanker-pihole
 ```
 
 *(Om du redan har andra tjänster igång påverkas de inte om du bara anger en tjänst — Compose startar/uppdaterar det du ber om.)*
