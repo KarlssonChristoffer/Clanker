@@ -7,6 +7,9 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('media');
 
 const nodeRequire = createRequire(import.meta.url);
 
@@ -20,9 +23,7 @@ function configureFfmpegPathForVoice(): void {
       process.env.FFMPEG_PATH = normalized;
       return;
     }
-    console.warn(
-      `[music] FFMPEG_PATH points to a missing file (${normalized}). Ignoring it and trying ffmpeg-static.`,
-    );
+    log.warn(`FFMPEG_PATH points to a missing file (${normalized}). Ignoring it and trying ffmpeg-static.`);
   }
 
   if (FFMPEG_STATIC_BIN) {
@@ -31,16 +32,12 @@ function configureFfmpegPathForVoice(): void {
       process.env.FFMPEG_PATH = normalized;
       return;
     }
-    console.warn(
-      `[music] ffmpeg-static path has no file (${normalized}). Often: antivirus, or npm install not from monorepo root. Try: winget install Gyan.FFmpeg and set FFMPEG_PATH to ffmpeg.exe.`,
-    );
+    log.warn(`ffmpeg-static path has no file (${normalized}). Often: antivirus, or npm install not from monorepo root. Try: winget install Gyan.FFmpeg and set FFMPEG_PATH to ffmpeg.exe.`);
     process.env.FFMPEG_PATH = normalized;
     return;
   }
 
-  console.warn(
-    '[music] ffmpeg-static not found — run `npm install` from the monorepo root. Then restart the bot.',
-  );
+  log.warn('ffmpeg-static not found — run `npm install` from the monorepo root. Then restart the bot.');
 }
 
 configureFfmpegPathForVoice();
@@ -67,7 +64,7 @@ export function resolveYtDlpSpawnPath(): string {
       cachedYtdlp = n;
       return n;
     }
-    console.warn(`[music] YTDLP_PATH is set but file missing: ${n}`);
+    log.warn(`YTDLP_PATH is set but file missing: ${n}`);
   }
 
   const bundled = bundledYtdlpPath();
@@ -76,9 +73,7 @@ export function resolveYtDlpSpawnPath(): string {
     return bundled;
   }
 
-  console.error(
-    `[music] yt-dlp missing at ${bundled}. Fixes: (1) Repo root: npm run rebuild:ytdlp -w discord-bot  (2) Or: winget install yt-dlp  then set YTDLP_PATH to yt-dlp.exe  (3) npm must not use --ignore-scripts (postinstall downloads the binary).`,
-  );
+  log.error(`yt-dlp missing at ${bundled}. Fixes: (1) Repo root: npm run rebuild:ytdlp -w discord-bot  (2) Or: winget install yt-dlp  then set YTDLP_PATH to yt-dlp.exe  (3) npm must not use --ignore-scripts (postinstall downloads the binary).`);
   cachedYtdlp = bundled;
   return bundled;
 }

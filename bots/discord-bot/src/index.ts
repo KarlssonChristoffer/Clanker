@@ -12,8 +12,6 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
-  REST,
-  Routes,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
   type Interaction,
@@ -26,33 +24,29 @@ import { registerMessageTracker } from './message-tracker.js';
 import {
   enqueue, skip, previous, pause, resume, stop, initPlayDl, getLastChannelId,
   createPlaylist, deletePlaylist, listPlaylists, getPlaylistTracks,
-  addTrackToPlaylist, removeTrackFromPlaylist, playPlaylist,
+  addTrackToPlaylist, removeTrackFromPlaylist, playPlaylist, shutdownMusic,
 } from './music-player.js';
 import { startMusicHttpServer } from './music-http.js';
 import { getPool } from './db.js';
 import { resolveHubMigrationsDir } from './resolve-hub-migrations-dir.js';
 import { checkYtDlpAtStartup } from './media-env.js';
+import { initConfig } from './core/config.js';
+import { childLogger, logger } from './core/logger.js';
+import { installProcessHandlers, onShutdown, isShuttingDown } from './core/lifecycle.js';
+import { handleInteractionError } from './core/interaction-errors.js';
+import { syncSlashCommands } from './core/command-sync.js';
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    console.error(`Missing ${name}`);
-    throw new Error(`Missing ${name}`);
-  }
-  return value;
-}
+const config = initConfig();
+const log = childLogger('bot');
+const musicLog = childLogger('music');
 
-const token = requireEnv('DISCORD_BOT_TOKEN');
-const appId = requireEnv('DISCORD_APPLICATION_ID');
-const databaseUrl = requireEnv('DATABASE_URL');
-const musicHttpPort = Number(process.env.MUSIC_BOT_HTTP_PORT ?? '3012');
-
-/** In default Docker bridge, Discord voice UDP rarely works; warn once at boot (Pi: discord-bot-host; PC: npm run bot:dev). */
+/** In default Docker bridge, Discord voice UDP rarely works; warn once at boot (Linux: discord-bot-host; PC: npm run bot:dev). */
 function warnDockerBridgeVoice(): void {
   if (!existsSync('/.dockerenv')) return;
   if (process.env.DISCORD_BOT_VOICE_ALLOW_BRIDGE === '1') return;
-  console.warn(
-    '[music] Kör i container (bridge): Discord-röst/musik fungerar oftast inte här. Linux/Pi: profil discord-host + discord-bot-host. Windows/macOS Docker Desktop: `npm run bot:dev` på värden. Sätt DISCORD_BOT_VOICE_ALLOW_BRIDGE=1 för att dölja denna varning.',
+  if (process.env.DISCORD_BOT_NETWORK_MODE === 'host') return;
+  log.warn(
+    'Running in a container: if this is the bridge network, Discord voice/music usually fails. Linux: compose profile discord-host (discord-bot-host). Windows/macOS Docker Desktop: run `npm run bot:dev` on the host. Set DISCORD_BOT_VOICE_ALLOW_BRIDGE=1 to hide this warning.',
   );
 }
 
@@ -116,18 +110,6 @@ const commands = [
     .toJSON(),
 ];
 
-async function registerSlashCommands(): Promise<void> {
-  const rest = new REST({ version: '10' }).setToken(token);
-  const guildId = process.env.DISCORD_GUILD_ID?.trim();
-  if (guildId) {
-    await rest.put(Routes.applicationGuildCommands(appId, guildId), { body: commands });
-    console.log(`Slash commands registered (guild ${guildId}).`);
-  } else {
-    await rest.put(Routes.applicationCommands(appId), { body: commands });
-    console.log('Slash commands registered (global).');
-  }
-}
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -140,11 +122,20 @@ const client = new Client({
 });
 
 client.once(Events.ClientReady, (c) => {
-  console.log(`Ready as ${c.user.tag}`);
+  log.info({ user: c.user.tag, guilds: c.guilds.cache.size }, 'Discord client ready');
 });
 
-client.on('error', (err) => {
-  console.error('[discord] Client error:', err.message);
+client.on(Events.Error, (err) => {
+  log.error({ err }, 'Discord client error');
+});
+client.on(Events.Warn, (message) => {
+  log.warn({ message }, 'Discord client warning');
+});
+client.on(Events.ShardDisconnect, (event, shardId) => {
+  log.warn({ code: event.code, shardId }, 'Discord gateway disconnected');
+});
+client.on(Events.ShardResume, (shardId, replayed) => {
+  log.info({ shardId, replayed }, 'Discord gateway resumed');
 });
 
 async function handlePlay(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -169,7 +160,7 @@ async function handlePlay(interaction: ChatInputCommandInteraction): Promise<voi
       await interaction.editReply(`▶️ **${t.title}**${t.artist ? ` — ${t.artist}` : ''} lades till i kön.`);
     }
   } catch (err) {
-    console.error('[music] enqueue error:', err);
+    musicLog.error({ err, guildId: interaction.guildId, query }, 'enqueue failed');
     await interaction.editReply(`❌ Fel: ${(err as Error).message}`);
   }
 }
@@ -318,9 +309,7 @@ async function handleQueue(interaction: ChatInputCommandInteraction): Promise<vo
   await interaction.editReply({ embeds: [embed] });
 }
 
-client.on(Events.InteractionCreate, async (interaction: Interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-
+async function handleChatInput(interaction: ChatInputCommandInteraction): Promise<void> {
   switch (interaction.commandName) {
     case 'ping':
       await interaction.reply({ content: 'Pong!', flags: 64 });
@@ -361,40 +350,67 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       await handlePlaylist(interaction);
       break;
   }
-});
+}
 
-process.on('SIGTERM', async () => {
-  client.destroy();
-  await closeDb();
-  process.exit(0);
+client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+  if (isShuttingDown()) return;
+  try {
+    if (interaction.isChatInputCommand()) {
+      await handleChatInput(interaction);
+    }
+  } catch (err) {
+    await handleInteractionError(interaction, err);
+  }
 });
 
 async function main(): Promise<void> {
+  installProcessHandlers();
+  log.info({ version: config.version, nodeEnv: config.nodeEnv, node: process.version }, 'starting discord-bot');
+
   await prepareDiscordVoiceCrypto();
-  initDb(databaseUrl);
-  try {
-    await runSqlMigrations(getPool(), resolveHubMigrationsDir(), (line) =>
-      console.log(`[migrations] ${line}`),
-    );
-  } catch (e) {
-    console.error('[migrations] failed:', e);
-    throw e;
+  const pool = initDb(config.databaseUrl);
+  onShutdown('database', () => closeDb(), 90);
+
+  if (config.runMigrations) {
+    const migrationsLog = childLogger('migrations');
+    await runSqlMigrations(pool, resolveHubMigrationsDir(), (line) => migrationsLog.info(line));
+  } else {
+    log.info('migrations skipped (DISCORD_BOT_RUN_MIGRATIONS=0)');
   }
+
   await initPlayDl();
-  await checkYtDlpAtStartup({
-    info: (obj, msg) => console.log(`[yt-dlp] ${msg}`, obj),
-    error: (obj, msg) => console.error(`[yt-dlp] ${msg}`, obj),
-  });
+  await checkYtDlpAtStartup(childLogger('yt-dlp'));
+
   registerVoiceTracker(client);
   registerGuildTracker(client);
   registerMessageTracker(client);
-  startMusicHttpServer(client, musicHttpPort);
+
+  const http = startMusicHttpServer({
+    client,
+    port: config.httpPort,
+    bind: config.httpBind,
+    secret: config.httpSecret,
+    version: config.version,
+  });
+  onShutdown('http-server', () => http.close(), 10);
+  onShutdown('music', () => shutdownMusic(), 20);
+  onShutdown('discord-client', () => client.destroy(), 30);
+
   warnDockerBridgeVoice();
-  await registerSlashCommands();
-  await client.login(token);
+
+  await syncSlashCommands({
+    pool,
+    token: config.token,
+    appId: config.appId,
+    guildIds: config.commandGuildIds,
+    commands,
+    force: config.forceCommandSync,
+  });
+  await client.login(config.token);
 }
 
 main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+  logger.fatal({ err }, 'startup failed');
+  // Let pino flush before exiting.
+  setImmediate(() => process.exit(1));
 });

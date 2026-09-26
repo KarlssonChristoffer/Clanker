@@ -9,6 +9,9 @@
 
 import { Events, type Client, type Message } from 'discord.js';
 import { getPool } from './db.js';
+import { childLogger } from './core/logger.js';
+
+const log = childLogger('message-tracker');
 
 async function logMessage(msg: Message): Promise<void> {
   if (!msg.guildId) return;   // ignore DMs
@@ -35,6 +38,6 @@ async function logMessage(msg: Message): Promise<void> {
 export function registerMessageTracker(client: Client): void {
   client.on(Events.MessageCreate, async (msg) => {
     try { await logMessage(msg); }
-    catch (err) { console.error('[message-tracker] MessageCreate error:', err); }
+    catch (err) { log.error({ err }, 'MessageCreate error'); }
   });
 }

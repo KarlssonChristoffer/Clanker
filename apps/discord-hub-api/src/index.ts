@@ -1369,6 +1369,15 @@ function createApp(env: AppEnv) {
     return (env.musicBotHttpUrl ?? "").trim().replace(/\/$/, "");
   }
 
+  /** fetch() against the bot's HTTP server with the shared-secret header and a timeout. */
+  function botFetch(url: string, init: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(init.headers);
+    if (env.botHttpSecret) {
+      headers.set("X-Clanker-Secret", env.botHttpSecret);
+    }
+    return fetch(url, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(15_000) });
+  }
+
   async function requireMusicBotUrl(c: Context): Promise<string | null> {
     if (!env.musicBotHttpUrl) {
       c.json({ error: "Music bot not configured" }, 503);
@@ -1392,7 +1401,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(
+        const res = await botFetch(
           `${botBase}/music/state?guildId=${encodeURIComponent(guildId)}`,
         );
         const json = (await res.json()) as Record<string, unknown>;
@@ -1437,7 +1446,7 @@ function createApp(env: AppEnv) {
     body: Record<string, unknown>,
   ) {
     try {
-      const res = await fetch(`${botUrl}${path}`, {
+      const res = await botFetch(`${botUrl}${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -1691,7 +1700,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(
+        const res = await botFetch(
           `${botBase}/music/queue/${itemId}?guildId=${encodeURIComponent(guildId)}`,
           { method: "DELETE" },
         );
@@ -1747,7 +1756,7 @@ function createApp(env: AppEnv) {
     const botBase = musicBotBaseUrl();
     if (botBase) {
       try {
-        const res = await fetch(`${botBase}/music/queue/reorder`, {
+        const res = await botFetch(`${botBase}/music/queue/reorder`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ guildId, orderedIds }),

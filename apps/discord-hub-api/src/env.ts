@@ -191,6 +191,8 @@ export function loadEnv() {
     /** Periodic League Riot sync; off unless `LEAGUE_AUTO_SYNC_ENABLED=1` (saves rate limit / Pi load). */
     leagueAutoSyncEnabled: truthyEnv("LEAGUE_AUTO_SYNC_ENABLED"),
     musicBotHttpUrl: process.env.MUSIC_BOT_HTTP_URL?.trim() || undefined,
+    /** Shared secret sent as `X-Clanker-Secret` to the bot's HTTP server (must match the bot's BOT_HTTP_SECRET). */
+    botHttpSecret: process.env.BOT_HTTP_SECRET?.trim() || undefined,
     discordHubAllowedGuildIds: parseSnowflakeList(
       process.env.DISCORD_HUB_ALLOWED_GUILD_IDS,
     ),
