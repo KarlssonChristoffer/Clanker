@@ -240,10 +240,10 @@ async function handle(message: Message): Promise<void> {
   }
   // Unsure: ask the author instead of guessing.
   const guess = result.type === 'inte_lfg' ? (flavor === 'retail' ? 'mplus' : 'dungeon') : result.type;
-  const options = Object.keys(contentOptions(flavor)) as ContentType[];
+  // Max 5 buttons per row: the four most likely activity types plus "Inte LFG".
+  const options = [...(Object.keys(contentOptions(flavor)) as ContentType[]).filter((t) => t !== 'inte_lfg').slice(0, 4), 'inte_lfg' as const];
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     ...options
-      .slice(0, 5)
       .map((t) =>
         new ButtonBuilder()
           .setCustomId(customId('lfg', 'type', id, t))

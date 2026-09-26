@@ -5,6 +5,7 @@
  * Undo is conservative: things the run created are only deleted when nothing else depends on them
  * (no messages from people in a channel, no members in a role); otherwise they are left and reported.
  */
+import { isPostable } from '../core/channels.js';
 import {
   ActionRowBuilder,
   ChannelType,
@@ -20,7 +21,6 @@ import {
   type GuildChannelCreateOptions,
   type GuildOnboardingPromptData,
   type PermissionOverwriteOptions,
-  type TextChannel,
 } from 'discord.js';
 import type { Queryable } from '../db.js';
 import { childLogger } from '../core/logger.js';
@@ -54,12 +54,20 @@ export const SETUP_BOT_PERMISSIONS = [
 
 // ── Bindings ─────────────────────────────────────────────────────────────────
 
+/** Bindings are read on hot paths (every #lfg message, every voice join): cache per guild for 60 s. */
+const BINDINGS_TTL_MS = 60_000;
+const bindingsCache = new Map<string, { at: number; data: Record<string, string> }>();
+
 export async function loadBindings(db: Queryable, guildId: string): Promise<Record<string, string>> {
+  const cached = bindingsCache.get(guildId);
+  if (cached && Date.now() - cached.at < BINDINGS_TTL_MS) return cached.data;
   const res = await db.query<{ blueprint_key: string; discord_id: string }>(
     'SELECT blueprint_key, discord_id FROM bot.setup_bindings WHERE guild_id = $1',
     [guildId],
   );
-  return Object.fromEntries(res.rows.map((r) => [r.blueprint_key, r.discord_id]));
+  const data = Object.fromEntries(res.rows.map((r) => [r.blueprint_key, r.discord_id]));
+  bindingsCache.set(guildId, { at: Date.now(), data });
+  return data;
 }
 
 export async function bind(db: Queryable, guildId: string, key: string, kind: string, id: string): Promise<void> {
@@ -69,6 +77,7 @@ export async function bind(db: Queryable, guildId: string, key: string, kind: st
      ON CONFLICT (guild_id, blueprint_key) DO UPDATE SET kind = EXCLUDED.kind, discord_id = EXCLUDED.discord_id, updated_at = now()`,
     [guildId, key, kind, id],
   );
+  bindingsCache.delete(guildId);
 }
 
 /** Channel id bound to a blueprint key (e.g. 'ch.annonser'), falling back to a channel with that name. */
@@ -417,15 +426,15 @@ export async function executePlan(opts: {
         await run('rollväljare i #välkommen', async () => {
           const channelId = channelIds.get('ch.valkommen');
           const ch = channelId ? await guild.channels.fetch(channelId) : null;
-          if (!ch || ch.type !== ChannelType.GuildText) throw new Error('#välkommen saknas');
+          if (!isPostable(ch)) throw new Error('#välkommen saknas');
           const payload = rolePickerMessage(guild, blueprint.roles, roleIds);
           const bindings = await loadBindings(db, guild.id);
           const existingId = bindings[ROLE_PICKER_BINDING];
-          const existing = existingId ? await (ch as TextChannel).messages.fetch(existingId).catch(() => null) : null;
+          const existing = existingId ? await ch.messages.fetch(existingId).catch(() => null) : null;
           if (existing) {
             await existing.edit(payload);
           } else {
-            const msg = await (ch as TextChannel).send(payload);
+            const msg = await ch.send(payload);
             await bind(db, guild.id, ROLE_PICKER_BINDING, 'message', msg.id);
             await record('create', 'message', msg.id, ROLE_PICKER_BINDING, null, { channelId: ch.id });
           }
@@ -597,6 +606,7 @@ export async function undoRun(opts: { guild: Guild; db: Queryable; runId: string
     const exists = guild.channels.cache.has(id) || guild.roles.cache.has(id) || key === ROLE_PICKER_BINDING;
     if (!exists) await db.query('DELETE FROM bot.setup_bindings WHERE guild_id = $1 AND blueprint_key = $2', [guild.id, key]);
   }
+  bindingsCache.delete(guild.id);
   return out;
 }
 

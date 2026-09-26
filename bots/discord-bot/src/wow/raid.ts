@@ -8,15 +8,14 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
-  ChannelType,
   EmbedBuilder,
   GuildScheduledEventEntityType,
   GuildScheduledEventPrivacyLevel,
   type Client,
   type Guild,
-  type TextChannel,
 } from 'discord.js';
 import type { Queryable } from '../db.js';
+import { isPostable, type PostableChannel } from '../core/channels.js';
 import { customId } from '../core/components.js';
 import { childLogger } from '../core/logger.js';
 import { PermanentJobError, type JobHandler } from '../core/scheduler.js';
@@ -166,10 +165,10 @@ export async function createScheduledEvent(
   }
 }
 
-async function eventChannel(client: Client, event: RaidEvent): Promise<TextChannel> {
+async function eventChannel(client: Client, event: RaidEvent): Promise<PostableChannel> {
   const ch = await client.channels.fetch(event.channel_id).catch(() => null);
-  if (!ch || ch.type !== ChannelType.GuildText) throw new PermanentJobError(`channel ${event.channel_id} is gone`);
-  return ch as TextChannel;
+  if (!isPostable(ch)) throw new PermanentJobError(`channel ${event.channel_id} is gone`);
+  return ch;
 }
 
 export async function refreshEventMessage(client: Client, db: Queryable, event: RaidEvent, flavor: string): Promise<void> {

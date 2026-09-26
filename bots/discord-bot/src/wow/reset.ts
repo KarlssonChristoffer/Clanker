@@ -4,7 +4,8 @@
  * is not announced yet, so both are configurable: WOW_RESET_WEEKDAY (1 = Mon … 7 = Sun) and
  * WOW_RESET_TIME_UTC ("HH:MM").
  */
-import { ChannelType, EmbedBuilder, type Client, type TextChannel } from 'discord.js';
+import { isPostable } from '../core/channels.js';
+import { EmbedBuilder, type Client } from 'discord.js';
 import type { Queryable } from '../db.js';
 import { features } from '../core/features.js';
 import { childLogger } from '../core/logger.js';
@@ -43,7 +44,7 @@ async function postReset(client: Client, db: Queryable, guildId: string): Promis
   if (!guild) return;
   const channelId = await boundChannelId(db, guild, 'ch.annonser', 'annonser');
   const ch = channelId ? await guild.channels.fetch(channelId).catch(() => null) : null;
-  if (!ch || ch.type !== ChannelType.GuildText) {
+  if (!isPostable(ch)) {
     log.warn({ guildId }, 'no #annonser channel for the reset post');
     return;
   }
@@ -66,7 +67,7 @@ async function postReset(client: Client, db: Queryable, guildId: string): Promis
         : 'Inget inbokat än. Skapa något med `/raid skapa`!',
     })
     .setFooter({ text: 'Weekly reset' });
-  await (ch as TextChannel).send({ embeds: [embed] });
+  await ch.send({ embeds: [embed] });
 }
 
 export function resetJob(getClient: () => Client, db: Queryable): JobHandler<{ guildId: string }> {

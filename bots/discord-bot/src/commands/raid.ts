@@ -2,7 +2,8 @@
  * /raid skapa <titel> <tid> [typ] [storlek]   sign-up post in #raid-anmälan + Discord event + ping
  * /raid avbryt <id>                            cancel (creator or Manage Events)
  */
-import { ChannelType, PermissionFlagsBits, SlashCommandBuilder, type TextChannel } from 'discord.js';
+import { isPostable } from '../core/channels.js';
+import { ChannelType, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 import type { SlashCommand } from '../core/commands.js';
 import type { ComponentHandler } from '../core/components.js';
 import { getConfig } from '../core/config.js';
@@ -42,7 +43,7 @@ async function createRaid(interaction: Parameters<SlashCommand['execute']>[0]): 
 
   const channelId = (await boundChannelId(db, guild, 'ch.raid', 'raid-anmälan')) ?? interaction.channelId;
   const channel = await guild.channels.fetch(channelId).catch(() => null);
-  if (!channel || channel.type !== ChannelType.GuildText) throw new UserFacingError('Hittar ingen textkanal att posta anmälan i.');
+  if (!isPostable(channel)) throw new UserFacingError('Hittar ingen textkanal att posta anmälan i.');
   await interaction.deferReply({ flags: EPHEMERAL });
 
   const res = await db.query<{ id: string }>(
@@ -51,7 +52,7 @@ async function createRaid(interaction: Parameters<SlashCommand['execute']>[0]): 
     [guildId, channel.id, kind, title, parsed.at, size, interaction.user.id],
   );
   const event = (await loadEvent(db, res.rows[0]!.id))!;
-  const msg = await (channel as TextChannel).send(renderEvent(event, []));
+  const msg = await channel.send(renderEvent(event, []));
   await db.query('UPDATE bot.raid_events SET message_id = $2 WHERE id = $1', [event.id, msg.id]);
 
   const voiceId = kind === 'raid' ? await boundChannelId(db, guild, 'vc.raid', 'Raid') : null;
@@ -96,8 +97,8 @@ async function cancelRaid(interaction: Parameters<SlashCommand['execute']>[0]): 
   if (event.discord_event_id) await interaction.guild!.scheduledEvents.delete(event.discord_event_id).catch(() => undefined);
   const updated: RaidEvent = { ...event, status: 'cancelled' };
   const ch = await interaction.guild!.channels.fetch(event.channel_id).catch(() => null);
-  if (ch?.type === ChannelType.GuildText && event.message_id) {
-    const msg = await (ch as TextChannel).messages.fetch(event.message_id).catch(() => null);
+  if (isPostable(ch) && event.message_id) {
+    const msg = await ch.messages.fetch(event.message_id).catch(() => null);
     await msg?.edit(renderEvent(updated, await loadSignups(db, updated, getConfig().wow.flavor)));
   }
   await interaction.reply({ content: `❌ **${event.title}** är inställd.`, flags: EPHEMERAL });

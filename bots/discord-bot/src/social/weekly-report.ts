@@ -4,7 +4,8 @@
  * playback log, raids); Jev only picks the quote of the week among this week's quotes (Choice) and a
  * mood headline. Without Jev a random quote and a neutral headline are used.
  */
-import { ChannelType, EmbedBuilder, type Client, type Guild, type TextChannel } from 'discord.js';
+import { isPostable, type PostableChannel } from '../core/channels.js';
+import { EmbedBuilder, type Client, type Guild } from 'discord.js';
 import { registerAdminSubcommand } from '../commands/admin.js';
 import { EPHEMERAL, pick } from '../commands/_shared.js';
 import { features } from '../core/features.js';
@@ -161,10 +162,10 @@ export async function buildWeeklyReportEmbed(guild: Guild, now = new Date()): Pr
   return embed;
 }
 
-async function reportChannel(guild: Guild): Promise<TextChannel | null> {
+async function reportChannel(guild: Guild): Promise<PostableChannel | null> {
   const id = await boundChannelId(db, guild, 'ch.annonser', 'annonser');
   const ch = id ? await guild.channels.fetch(id).catch(() => null) : null;
-  return ch?.type === ChannelType.GuildText ? (ch as TextChannel) : null;
+  return isPostable(ch) ? ch : null;
 }
 
 export function weeklyReportJob(getClient: () => Client): JobHandler<{ guildId: string }> {
@@ -205,7 +206,7 @@ registerAdminSubcommand('veckorapport-nu', {
     if (!guild) throw new UserFacingError('Bara i en server.');
     await interaction.deferReply({ flags: EPHEMERAL });
     const embed = await buildWeeklyReportEmbed(guild);
-    const ch = (await reportChannel(guild)) ?? (interaction.channel?.type === ChannelType.GuildText ? (interaction.channel as TextChannel) : null);
+    const ch = (await reportChannel(guild)) ?? (isPostable(interaction.channel) ? interaction.channel : null);
     if (!ch) throw new UserFacingError('Hittar ingen kanal att posta i.');
     await ch.send({ embeds: [embed], allowedMentions: { parse: [] } });
     await interaction.editReply(`📰 Veckorapporten är postad i <#${ch.id}>.`);
