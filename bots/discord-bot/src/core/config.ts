@@ -83,7 +83,6 @@ export function loadConfig() {
       region: (optionalEnv('WOW_REGION') ?? 'eu').toLowerCase(),
       locale: optionalEnv('WOW_LOCALE') ?? 'en_GB',
       defaultRealm: optionalEnv('WOW_DEFAULT_REALM'),
-      defaultFaction: optionalEnv('WOW_DEFAULT_FACTION'),
       blizzardClientId: optionalEnv('BLIZZARD_CLIENT_ID'),
       blizzardClientSecret: optionalEnv('BLIZZARD_CLIENT_SECRET'),
       /** Override the Blizzard profile namespace prefix (e.g. once WoW Forever gets one). */
