@@ -3,7 +3,7 @@
  * - open.spotify.com/track/<id>: <meta og:title> (song), music:musician_description (artist), music:duration (s)
  * - open.spotify.com/oembed?url=…: {"title": …} for tracks, albums and playlists
  * Album and playlist track lists come from the embed page (parsed in music-player.ts).
- * Verified against live pages 2026-09-26.
+ * Verified against live pages 2026-09-26, from the bot container on tincan.
  */
 import { childLogger } from './core/logger.js';
 
@@ -11,9 +11,11 @@ const log = childLogger('spotify');
 
 export type SpotifyKind = 'track' | 'album' | 'playlist' | 'artist' | 'show' | 'episode';
 
-const USER_AGENT =
-  process.env.SPOTIFY_EMBED_USER_AGENT?.trim() ||
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+/**
+ * An honest bot UA on purpose: for a full browser UA Spotify serves the client-rendered app without the
+ * <meta> tags (only ~164 kB of JS shell); a non-browser UA gets the server-rendered page with them.
+ */
+const USER_AGENT = 'Clanker/1.0 (Discord bot; +https://github.com/KarlssonChristoffer/Clanker)';
 
 /** open.spotify.com/[intl-xx/]<kind>/<id>[?si=…] → { kind, id }. */
 export function parseSpotifyUrl(url: string): { kind: SpotifyKind; id: string } | null {
@@ -50,7 +52,7 @@ export function parseSpotifyTrackPage(html: string): { title: string; artist: st
 async function getText(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': USER_AGENT, Accept: 'text/html,application/json', 'Accept-Language': 'en-US,en;q=0.9' },
+      headers: { 'User-Agent': USER_AGENT, 'Accept-Language': 'en-US,en;q=0.9' },
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
