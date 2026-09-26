@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@clanker/ui/components/badge";
 import { Button } from "@clanker/ui/components/button";
 import { cn } from "@clanker/ui/lib/utils";
@@ -6,6 +6,9 @@ import { useHubAudio } from "@/components/HubAudioProvider";
 import { useHubToasts } from "@/components/HubToastProvider";
 import { useHubLocale } from "@/components/locale-provider";
 import type { HubLocale } from "@/i18n/hub-copy";
+import { apiUrl } from "@/config";
+
+const HUB_GUILD_ID = import.meta.env.VITE_DISCORD_HUB_GUILD_ID?.trim() ?? "";
 
 type LoreQuote = {
   speaker: string;
@@ -45,8 +48,31 @@ function hashSeed(input: string) {
   return seed >>> 0;
 }
 
-function pickLoreQuote(locale: HubLocale, seed: number) {
-  const quotes = LORE_QUOTES[locale];
+type QuoteBookResponse = { available?: boolean; quotes?: { content: string; author_name: string }[] };
+
+/** Quotes saved with 💬 in Discord (bot.quotes via hub-api); null until loaded or when unavailable. */
+function useQuoteBook(): LoreQuote[] | null {
+  const [quotes, setQuotes] = useState<LoreQuote[] | null>(null);
+  useEffect(() => {
+    if (!HUB_GUILD_ID) return;
+    const ac = new AbortController();
+    fetch(apiUrl(`/api/bot/guild/${encodeURIComponent(HUB_GUILD_ID)}/quotes?limit=50`), {
+      credentials: "include",
+      signal: ac.signal,
+    })
+      .then((res) => (res.ok ? (res.json() as Promise<QuoteBookResponse>) : null))
+      .then((json) => {
+        if (json?.available && json.quotes?.length) {
+          setQuotes(json.quotes.map((q) => ({ speaker: q.author_name, quote: q.content })));
+        }
+      })
+      .catch(() => undefined);
+    return () => ac.abort();
+  }, []);
+  return quotes;
+}
+
+function pickLoreQuote(quotes: readonly LoreQuote[], seed: number) {
   if (quotes.length === 0) {
     return { speaker: "Neutralen OS", quote: "…" };
   }
@@ -61,7 +87,9 @@ export default function HubLoreQuoteWidget() {
   const [shuffleSeed, setShuffleSeed] = useState(0);
 
   const dailySeed = useMemo(() => hashSeed(`${locale}:${localDateKey(new Date())}`), [locale]);
-  const quote = useMemo(() => pickLoreQuote(locale, dailySeed + shuffleSeed), [dailySeed, locale, shuffleSeed]);
+  const bookQuotes = useQuoteBook();
+  const quotes = bookQuotes ?? LORE_QUOTES[locale];
+  const quote = useMemo(() => pickLoreQuote(quotes, dailySeed + shuffleSeed), [dailySeed, quotes, shuffleSeed]);
 
   const quotedLine = `“${quote.quote}” — ${quote.speaker}`;
 
@@ -100,7 +128,7 @@ export default function HubLoreQuoteWidget() {
         <div className="relative">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">{d.loreQuoteNowServingLabel}</p>
-            <Badge variant="outline">{d.loreQuoteDailyBadge}</Badge>
+            <Badge variant="outline">{bookQuotes ? d.loreQuoteBookBadge : d.loreQuoteDailyBadge}</Badge>
           </div>
 
           <p className="mt-2 text-sm font-medium text-foreground">{quote.speaker}</p>

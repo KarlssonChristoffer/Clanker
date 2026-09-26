@@ -22,6 +22,7 @@ import {
 } from "./discord-proxy.js";
 import { DISCORD_OAUTH_TOKENS_COOKIE } from "./discord-tokens.js";
 import { getBotGuildLive, getBotLiveHealth } from "./bot-live.js";
+import { registerQuoteRoutes } from "./quotes.js";
 import type { AppEnv } from "./env.js";
 import { loadEnv } from "./env.js";
 import { getPublicProfile, upsertProfileFromSession } from "./profile-store.js";
@@ -1154,6 +1155,8 @@ function createApp(env: AppEnv) {
     }
     return c.json(r.summary);
   });
+
+  registerQuoteRoutes(app, env);
 
   app.get("/api/bot/live/health", async (c) => {
     const token = getCookie(c, COOKIE_NAME);
