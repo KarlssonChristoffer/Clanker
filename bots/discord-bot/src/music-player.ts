@@ -20,7 +20,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { type Client } from 'discord.js';
 import playdl from 'play-dl';
 import { FFMPEG_STATIC_BIN, resolveYtDlpSpawnPath, ytdlpExtraArgs } from './media-env.js';
-import { fetchSpotifyTitle, fetchSpotifyTrackPublic, parseSpotifyUrl } from './spotify-public.js';
+import { fetchSpotifyTitle, fetchSpotifyTrackPublic, parseSpotifyUrl, pickYoutubeMatch, youtubeQueryFor } from './spotify-public.js';
 import { getPool } from './db.js';
 import { childLogger } from './core/logger.js';
 
@@ -416,11 +416,11 @@ async function spotifyTrackNamesToYoutubeTracks(
   }
   const t0 = Date.now();
   const resolved = await mapWithConcurrency(entries, concurrency, async (t): Promise<Track | null> => {
-    const searchQuery = `${t.name} ${t.artist ?? ''}`.trim();
+    const searchQuery = youtubeQueryFor({ title: t.name, artist: t.artist });
     try {
-      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 1 });
-      if (!results.length) return null;
-      const yt = results[0];
+      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 5 });
+      const yt = pickYoutubeMatch(results, { title: t.name, durationSec: t.durationSec });
+      if (!yt) return null;
       const watchUrl = youtubeWatchUrlFromSearchResult(yt);
       if (!watchUrl) return null;
       const track: Track = {
@@ -683,10 +683,10 @@ async function resolveTrack(query: string, requestedBy: string, channelId: strin
     if (spotifyLink) {
       const sp = await resolveSpotifyTrack(query);
       if (!sp) return null;
-      const searchQuery = `${sp.title} ${sp.artist}`.trim();
-      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 1 });
-      if (!results.length) return null;
-      const yt = results[0];
+      const searchQuery = youtubeQueryFor(sp);
+      const results = await playdl.search(searchQuery, { source: { youtube: 'video' }, limit: 5 });
+      const yt = pickYoutubeMatch(results, sp);
+      if (!yt) return null;
       const watchUrl = youtubeWatchUrlFromSearchResult(yt);
       if (!watchUrl) {
         log.warn({ detail: searchQuery }, 'YouTube search matched a video but had no url/id');

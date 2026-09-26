@@ -49,6 +49,36 @@ export function parseSpotifyTrackPage(html: string): { title: string; artist: st
   return { title, artist: artist || null, durationSec: Number.isFinite(duration) && duration > 0 ? duration : null };
 }
 
+// ── Matching on YouTube ──────────────────────────────────────────────────────
+
+/** "Artist Title" without remaster tags, which mostly steer YouTube search to odd uploads. */
+export function youtubeQueryFor(song: { title: string; artist: string | null }): string {
+  const title =
+    song.title.replace(/\s*(?:[([][^)\]]*\bremaster(?:ed)?\b[^)\]]*[)\]]|-\s*[^-]*\bremaster(?:ed)?\b.*)$/i, '').trim() || song.title;
+  return `${song.artist ?? ''} ${title}`.trim();
+}
+
+const UNWANTED_VERSIONS = ['live', 'cover', 'karaoke', 'instrumental', 'remix', 'sped up', 'slowed', 'nightcore', 'reaction'];
+
+/**
+ * Best YouTube hit for a Spotify song: drop live/cover/karaoke-style uploads unless the song itself is one,
+ * then take the highest-ranked hit within 15 s of Spotify's length, else the highest-ranked remaining hit.
+ */
+export function pickYoutubeMatch<T extends { title?: string; durationInSec?: number }>(
+  results: T[],
+  song: { title: string; durationSec: number | null },
+): T | null {
+  if (!results.length) return null;
+  const songTitle = song.title.toLowerCase();
+  const isUnwanted = (r: T) =>
+    UNWANTED_VERSIONS.some((w) => !songTitle.includes(w) && new RegExp(`\\b${w}\\b`, 'i').test(r.title ?? ''));
+  const pool = results.filter((r) => !isUnwanted(r));
+  const candidates = pool.length ? pool : results;
+  const target = song.durationSec;
+  const close = target ? candidates.find((r) => r.durationInSec && Math.abs(r.durationInSec - target) <= 15) : undefined;
+  return close ?? candidates[0]!;
+}
+
 async function getText(url: string): Promise<string | null> {
   try {
     const res = await fetch(url, {
