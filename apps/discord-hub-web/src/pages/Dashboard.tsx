@@ -1115,7 +1115,6 @@ export default function DashboardPage() {
         layouts={activeLayout}
         hiddenWidgetIds={hiddenWidgetIds}
         widgetVisualPrefsById={prefs.widgetVisualById}
-        stylePackId={prefs.desktop.stylePackId}
         showWidgetBorder={prefs.desktop.showWidgetBorder}
         animationIntensity={prefs.motion.animationIntensity}
         onMoveWidget={moveWidget}

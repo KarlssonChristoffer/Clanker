@@ -115,11 +115,13 @@ function SpinWheelInner(props: SpinWheelProps) {
       const times = resolveKeyframeTimes ?? Array.from({ length: n }, (_, i) => i / (n - 1));
       const segCount = n - 1;
       const ease = Array.from({ length: segCount }, (_, i) =>
-        i === 0 ? ([0.45, 0, 0.55, 1] as const) : ([0.25, 0.1, 0.25, 1.0] as const),
+        i === 0
+          ? ([0.45, 0, 0.55, 1] as [number, number, number, number])
+          : ([0.25, 0.1, 0.25, 1.0] as [number, number, number, number]),
       );
       const controls = animate(rotate, [...resolveKeyframes], {
         duration: resolveKeyframeDuration ?? 1.12,
-        times,
+        times: [...times],
         ease,
       });
       void controls

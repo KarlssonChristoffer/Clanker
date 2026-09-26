@@ -29,7 +29,7 @@
     "preview:tools": "npm run preview -w dev-tools-web",
     "lint": "npm run lint -w discord-hub-web",
     "lint:tools": "npm run lint -w dev-tools-web",
-    "typecheck": "npm run typecheck -w @clanker/hub-pg-migrate && npm run typecheck -w discord-hub-web && npm run typecheck -w dev-tools-web && npm run typecheck -w discord-hub-api && npm run typecheck -w discord-bot"
+    "typecheck": "npm run build -w @clanker/hub-pg-migrate && npm run typecheck -w @clanker/hub-pg-migrate && npm run typecheck -w discord-hub-web && npm run typecheck -w dev-tools-web && npm run typecheck -w discord-hub-api && npm run typecheck -w discord-bot"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"
