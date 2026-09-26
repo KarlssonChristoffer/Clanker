@@ -4,7 +4,7 @@ Efter flytten kör **tincan** Postgres (`clanker-db`), `discord-hub-api`, `disco
 (`discord-bot-host`) och Caddy. **Pi-hole stannar på Pi:n** och pekar bara om hostnamnen.
 
 Platshållare nedan: `<PI_IP>`, `<TINCAN_IP>`, `<user>`. Den gamla databasen kör antingen på Pi:n
-eller på din workstation. Kör steg 2 där `clanker-db` kör **i dag** (kolla med `docker ps`).
+eller på din workstation. Kör steg 2 där `clanker-db` kör **i dag** (kolla med `docker ps`). tincan: 192.168.0.174, Pi:n: 192.168.0.2.
 
 > **Regel nummer ett:** två bot-instanser med samma token får aldrig vara igång samtidigt, varken
 > på Pi:n, på tincan eller i `npm run dev` på din PC. Då slåss de om gateway-sessionen och röst- och
@@ -14,35 +14,32 @@ Planerad nertid: cirka 15–30 min, alltså tiden mellan steg 1 och steg 4.
 
 ---
 
-## 0. Förberedelser på tincan (ingen nertid)
+## 0. Förberedelser på tincan (ingen nertid) — **redan gjort 2026-09-26**
+
+tincan (192.168.0.174, Ubuntu 26.04, x86_64) följer mönstret `/srv/stacks/<namn>` med en gemensam Caddy i
+`/srv/stacks/proxy` på Docker-nätverket `edge`. Clanker har anpassats till det:
+
+| Vad | Var | Status |
+|---|---|---|
+| Repot (`feat/bot-overhaul`) | `/srv/stacks/clanker` | klonat |
+| `.env` (chmod 600) | `/srv/stacks/clanker/.env` | skapad: icke-hemliga värden ifyllda, Postgres-lösenord, `SESSION_SECRET` och `BOT_HTTP_SECRET` genererade. **Tomt att fylla i:** `DISCORD_BOT_TOKEN`, `DISCORD_CLIENT_SECRET`, `SETUP_ALLOWED_GUILD_IDS`, valfria API-nycklar |
+| `docker-compose.override.yml` (gitignorerad) | `/srv/stacks/clanker` | lägger `discord-hub-web` och `discord-hub-api` på nätverket `edge` |
+| Caddy-site | `/srv/stacks/proxy/conf.d/clanker.caddy` | `http://clanker.discord` (`/api` → hub-api, resten → webben) och `http://clanker.pihole` → Pi:n. Laddad, övriga siter opåverkade |
+| ufw | `3012/tcp ALLOW från 172.16.0.0/12` | Docker-nät → botens HTTP. Inte öppet mot LAN |
+| Imager | `docker compose build` | byggda |
+
+Clankers egen `clanker-caddy` används **inte** på tincan (port 80/443 ägs av `/srv/stacks/proxy`), därför
+`COMPOSE_PROFILES=db,discord,discord-host`. Portar publicerade av Docker (3002 för wheel-collab) går förbi ufw.
+Webbens port 4173 är bunden till 127.0.0.1.
+
+> **Samma Discord-app som neutralen-bot.** Clanker och neutralen-bot använder båda applikation `1486101477994004631`.
+> Bara **en** av dem får köra med token åt gången. neutralen-bot-imagen (`neutralen-bot:overhaul`) finns byggd
+> men startas inte.
+
+Bygga om efter en `git pull`:
 
 ```bash
-uname -m                      # förväntat: x86_64 (annat går också, imagen byggs lokalt)
-docker version && docker compose version
-timedatectl                   # tidszonen spelar ingen roll för boten (den räknar i Europe/Stockholm), men NTP ska vara på
-
-sudo mkdir -p /opt/Clanker && sudo chown "$USER" /opt/Clanker
-git clone https://github.com/KarlssonChristoffer/Clanker.git /opt/Clanker
-cd /opt/Clanker
-git checkout feat/bot-overhaul      # eller main när grenen är mergad
-```
-
-Brandvägg (exempel med ufw). Boten kör med host-nät, så dess HTTP-port 3012 hamnar direkt på värden:
-
-```bash
-sudo ufw allow from 192.168.0.0/16 to any port 80 proto tcp     # Caddy (hubben)
-sudo ufw allow from 192.168.0.0/16 to any port 3002 proto tcp   # wheel-collab (WebSocket)
-sudo ufw deny 3012/tcp                                           # bot-HTTP: bara Docker-bryggan och localhost
-# 5432 publiceras bara på 127.0.0.1 som standard, ingen regel behövs.
-```
-
-> Om ufw används med Docker: bryggnätet (`discord-hub-api`) når värdens 3012 via `host.docker.internal`.
-> Blockerar ufw även det, tillåt Dockers subnät: `sudo ufw allow from 172.16.0.0/12 to any port 3012 proto tcp`.
-
-Kopiera `.env` redan nu (steg 3 nedan) så att du kan bygga imagerna i förväg:
-
-```bash
-docker compose --profile db --profile discord --profile discord-host --profile caddy build
+cd /srv/stacks/clanker && git pull && docker compose build
 ```
 
 ---
@@ -92,13 +89,13 @@ Byt `clanker`/`clanker_discord` om du har andra `POSTGRES_USER`/`POSTGRES_DB` i 
 ### 2b. Överför
 
 ```bash
-scp clanker_discord.dump clanker_devtools.dump counts-before.txt <user>@<TINCAN_IP>:/opt/Clanker/
+scp clanker_discord.dump clanker_devtools.dump counts-before.txt <user>@<TINCAN_IP>:/srv/stacks/clanker/
 ```
 
 ### 2c. Återställ på tincan
 
 ```bash
-cd /opt/Clanker
+cd /srv/stacks/clanker
 docker compose --profile db up -d clanker-db
 until docker exec clanker-db pg_isready -q; do sleep 1; done
 
@@ -116,21 +113,20 @@ Kör samma radräkningsfråga som i 2a och jämför med `counts-before.txt`. Sif
 ## 3. Kopiera `.env` manuellt
 
 ```bash
-scp <user>@<PI_IP>:~/Clanker/.env /opt/Clanker/.env
-scp <user>@<PI_IP>:~/Clanker/bots/discord-bot/.env /opt/Clanker/bots/discord-bot/.env   # om den finns (används bara av npm-körning)
-chmod 600 /opt/Clanker/.env
+scp <user>@<PI_IP>:~/Clanker/.env /srv/stacks/clanker/.env
+scp <user>@<PI_IP>:~/Clanker/bots/discord-bot/.env /srv/stacks/clanker/bots/discord-bot/.env   # om den finns (används bara av npm-körning)
+chmod 600 /srv/stacks/clanker/.env
 ```
 
-Justera sedan `/opt/Clanker/.env` på tincan:
+Justera sedan `/srv/stacks/clanker/.env` på tincan:
 
 | Variabel | Värde på tincan | Varför |
 |---|---|---|
-| `COMPOSE_PROFILES` | `db,discord,discord-host,caddy` | `docker compose up -d` startar rätt saker, men **inte** Pi-hole |
-| `BOT_HTTP_SECRET` | `openssl rand -hex 32` | krävs av botens musik-HTTP (hub-api skickar samma värde) |
+| `COMPOSE_PROFILES` | `db,discord,discord-host` | redan satt. Ingen `caddy`: tincans egen proxy serverar hubben |
+| `BOT_HTTP_SECRET` | redan genererad | krävs av botens musik-HTTP (hub-api skickar samma värde) |
 | `FRONTEND_URL` | `http://clanker.discord` | prod-hubben via Caddy |
 | `DISCORD_REDIRECT_URI` | `http://clanker.discord/api/auth/discord/callback` | lägg **också** in den i Discord Developer Portal → OAuth2 → Redirects |
 | `COOKIE_SECURE` | `0` | hubben körs över http |
-| `CLANKER_PIHOLE_UPSTREAM` | `http://<PI_IP>:8080` | Caddy på tincan proxar Pi-hole-admin på Pi:n |
 | `DISCORD_BOT_HOST_DATABASE_URL` | (ta bort eller lämna tom) | standard `127.0.0.1:5432` stämmer när Postgres kör på samma värd |
 | `MUSIC_BOT_HTTP_URL` | (ta bort) | compose sätter `http://host.docker.internal:3012` åt API-containern |
 | `LOG_LEVEL` | `info` | |
@@ -149,12 +145,13 @@ COMPOSE_PROFILES=pihole
 ## 4. Starta stacken på tincan
 
 ```bash
-cd /opt/Clanker
-docker compose --profile db --profile discord --profile discord-host --profile caddy up -d --build
+cd /srv/stacks/clanker
+docker compose up -d          # profilerna kommer från COMPOSE_PROFILES i .env
 docker compose ps
 ```
 
-Det startar `clanker-db`, `discord-hub-api`, `discord-hub-web`, `discord-bot-host` och `clanker-caddy`.
+Det startar `clanker-db`, `discord-hub-api`, `discord-hub-web` och `discord-bot-host`. Hubben nås via tincans proxy
+(`/srv/stacks/proxy/conf.d/clanker.caddy`).
 API:t och boten kör båda migrationerna vid start. De tar ett advisory lock, så ordningen spelar ingen roll.
 
 ---
@@ -212,10 +209,10 @@ Från din PC:
 
 ```bash
 sudo mkdir -p /var/backups/clanker && sudo chown "$USER" /var/backups/clanker
-/opt/Clanker/scripts/db-backup.sh                 # testkör en gång
+/srv/stacks/clanker/scripts/db-backup.sh                 # testkör en gång
 ls -lh /var/backups/clanker/daily
 
-sudo cp /opt/Clanker/infra/systemd/clanker-db-backup.{service,timer} /etc/systemd/system/
+sudo cp /srv/stacks/clanker/infra/systemd/clanker-db-backup.{service,timer} /etc/systemd/system/
 sudo systemctl edit clanker-db-backup.service     # vid behov: User=<user> (måste vara i docker-gruppen)
 sudo systemctl daemon-reload
 sudo systemctl enable --now clanker-db-backup.timer
