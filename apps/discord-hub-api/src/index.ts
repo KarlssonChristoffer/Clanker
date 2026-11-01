@@ -74,6 +74,11 @@ import {
 import { COOKIE_NAME, verifySession, type SessionPayload } from "./session.js";
 import { startWheelCollabServer } from "./wheel-collab.js";
 import { startLeagueSyncScheduler } from "./league-auto-sync.js";
+import {
+  DISCORD_OAUTH_RETURN_COOKIE,
+  refererToTrustedOrigin,
+  resolvePostOAuthFrontendBase,
+} from "./oauth-return-url.js";
 
 const STATE_COOKIE = "discord_oauth_state";
 const STATE_MAX_AGE = 600;
@@ -312,6 +317,16 @@ function createApp(env: AppEnv) {
       sameSite: "Lax",
       maxAge: STATE_MAX_AGE,
     });
+    const returnOrigin = refererToTrustedOrigin(c.req.header("Referer"));
+    if (returnOrigin) {
+      setCookie(c, DISCORD_OAUTH_RETURN_COOKIE, returnOrigin, {
+        path: "/",
+        httpOnly: true,
+        secure: env.cookieSecure,
+        sameSite: "Lax",
+        maxAge: STATE_MAX_AGE,
+      });
+    }
     return c.redirect(discordAuthorizeUrl(env, state));
   });
 
@@ -319,7 +334,9 @@ function createApp(env: AppEnv) {
     const code = c.req.query("code");
     const state = c.req.query("state");
     const err = c.req.query("error");
-    const redirectFail = `${env.frontendUrl}/login?error=oauth`;
+    const returnCookie = getCookie(c, DISCORD_OAUTH_RETURN_COOKIE);
+    const frontendBase = resolvePostOAuthFrontendBase(returnCookie, env.frontendUrl);
+    const redirectFail = `${frontendBase}/login?error=oauth`;
 
     if (err) {
       if (env.oauthCallbackVerboseLog) {
@@ -329,11 +346,13 @@ function createApp(env: AppEnv) {
         );
       }
       deleteCookie(c, STATE_COOKIE, { path: "/" });
+      deleteCookie(c, DISCORD_OAUTH_RETURN_COOKIE, { path: "/" });
       return c.redirect(redirectFail);
     }
 
     const stored = getCookie(c, STATE_COOKIE);
     deleteCookie(c, STATE_COOKIE, { path: "/" });
+    deleteCookie(c, DISCORD_OAUTH_RETURN_COOKIE, { path: "/" });
 
     if (!code || !state || !stored || !timingSafeEqualString(stored, state)) {
       if (env.oauthCallbackVerboseLog) {
@@ -365,7 +384,7 @@ function createApp(env: AppEnv) {
       };
       await upsertProfileFromSession(baseSession);
       await setOAuthCookiesAfterLogin(c, env, baseSession, exchanged);
-      return c.redirect(`${env.frontendUrl}/dashboard`);
+      return c.redirect(`${frontendBase}/dashboard`);
     } catch (e) {
       if (env.oauthCallbackVerboseLog) {
         console.error("discord-hub-api: OAuth callback — token or user fetch failed:", e);
