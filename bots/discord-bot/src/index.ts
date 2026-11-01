@@ -45,6 +45,7 @@ const token = requireEnv('DISCORD_BOT_TOKEN');
 const appId = requireEnv('DISCORD_APPLICATION_ID');
 const databaseUrl = requireEnv('DATABASE_URL');
 const musicHttpPort = Number(process.env.MUSIC_BOT_HTTP_PORT ?? '3012');
+const runMigrations = process.env.DISCORD_BOT_RUN_MIGRATIONS !== '0';
 
 /** In default Docker bridge, Discord voice UDP rarely works; warn once at boot (Pi: discord-bot-host; PC: npm run bot:dev). */
 function warnDockerBridgeVoice(): void {
@@ -371,13 +372,17 @@ process.on('SIGTERM', async () => {
 async function main(): Promise<void> {
   await prepareDiscordVoiceCrypto();
   initDb(databaseUrl);
-  try {
-    await runSqlMigrations(getPool(), resolveHubMigrationsDir(), (line) =>
-      console.log(`[migrations] ${line}`),
-    );
-  } catch (e) {
-    console.error('[migrations] failed:', e);
-    throw e;
+  if (runMigrations) {
+    try {
+      await runSqlMigrations(getPool(), resolveHubMigrationsDir(), (line) =>
+        console.log(`[migrations] ${line}`),
+      );
+    } catch (e) {
+      console.error('[migrations] failed:', e);
+      throw e;
+    }
+  } else {
+    console.log('[migrations] skipped (DISCORD_BOT_RUN_MIGRATIONS=0)');
   }
   await initPlayDl();
   registerVoiceTracker(client);
